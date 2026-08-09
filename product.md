@@ -83,17 +83,23 @@ not here.
 - Scrape Funda for-sale Amsterdam listings
 - Store listings in structured storage with the fields above
 - Detect new listings via dedup against previously stored listings
-- Send a Telegram notification for every new listing (no filtering)
+- Apply one rough, hardcoded filter: **asking price ≤ €500,000** — this is
+  a coarse ceiling to keep notification volume sane, not the real filtering
+  logic (that's Phase 2). All listings under the ceiling are stored and
+  notified regardless of size/rooms/neighborhood.
+- Send a Telegram notification for every new listing under the price
+  ceiling
 - Runs on manual/scheduled trigger (scheduling mechanism decided in
   `architecture.md`)
 
 **Definition of done for Phase 1:** Running the scraper against live Funda
 Amsterdam search results reliably produces a Telegram message for each
-genuinely new listing, with no duplicate alerts for previously-seen
-listings, and no missed listings on a normal run.
+genuinely new listing priced at €500,000 or below, with no duplicate alerts
+for previously-seen listings, and no missed listings on a normal run.
 
 ### Phase 2 — Filtering
-- Add configurable search criteria (max price, min size, min rooms, etc.)
+- Replace the hardcoded €500k ceiling with configurable search criteria
+  (max price, min size, min rooms, etc.)
 - Notifications only fire for listings matching current criteria
 - Criteria should be easy to adjust without code changes (e.g. a config
   file) — exact mechanism decided in `architecture.md`
