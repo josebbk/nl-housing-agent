@@ -100,6 +100,23 @@ efficiently, not just correctly.
 - Installing pip packages into the existing `.venv` if they're already listed
   as project dependencies (e.g. in `requirements.txt`)
 
+## Documentation Maintenance — Mandatory
+
+`product.md` and `architecture.md` are the project's single source of truth
+for scope and technical design. They must stay accurate, or future sessions
+(including you) will plan against a stale picture of the project.
+
+- If a task changes what the product does (scope, features, roadmap status),
+  update `product.md` as part of that same task — not as a follow-up.
+- If a task changes a technical decision (data model, storage approach,
+  scraping method, scheduling, dependencies), update `architecture.md` as
+  part of that same task — not as a follow-up.
+- Small implementation details that don't change scope or design do not need
+  a doc update. Use judgment: if a future session reading only the docs
+  (not the code) would come away with a wrong picture, update the docs.
+- This is a normal file edit inside the project directory and does not
+  require asking for confirmation.
+
 ## Learning Loop — Mandatory
 
 Scraper breakage (Funda changing CSS selectors, page structure, or anti-bot
