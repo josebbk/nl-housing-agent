@@ -70,8 +70,10 @@ not here.
 ## Notifications
 
 - **Channel:** Telegram bot, messaging the developer directly
-- **Trigger (MVP):** Every listing detected as new (not previously seen)
-  triggers a notification — no filtering applied yet
+- **Trigger (MVP):** A listing detected as new (not previously seen)
+  triggers a notification only if it matches all Phase 1 filter criteria:
+  price €550,000–€750,000, ≥3 bedrooms, ≥100 m² living area (see Roadmap).
+  Listings that don't match are still stored, just not notified.
 - **Message content (minimum):** Address, price, size, rooms, link to the
   Funda listing
 - Bot setup details (token management, chat ID, message formatting) belong
@@ -83,26 +85,29 @@ not here.
 - Scrape Funda for-sale Amsterdam listings
 - Store listings in structured storage with the fields above
 - Detect new listings via dedup against previously stored listings
-- Apply one rough, hardcoded filter: **asking price ≤ €500,000** — this is
-  a coarse ceiling to keep notification volume sane, not the real filtering
-  logic (that's Phase 2). All listings under the ceiling are stored and
-  notified regardless of size/rooms/neighborhood.
-- Send a Telegram notification for every new listing under the price
-  ceiling
+- Apply hardcoded Phase 1 filter criteria — all listings stored regardless,
+  but notifications only fire for listings matching **all** of:
+  - Price between €550,000 and €750,000 (inclusive)
+  - Minimum 3 bedrooms
+  - Minimum 100 m² living area
+- Send a Telegram notification for every new listing matching all three
+  criteria above
 - Runs on manual/scheduled trigger (scheduling mechanism decided in
   `architecture.md`)
 
 **Definition of done for Phase 1:** Running the scraper against live Funda
 Amsterdam search results reliably produces a Telegram message for each
-genuinely new listing priced at €500,000 or below, with no duplicate alerts
-for previously-seen listings, and no missed listings on a normal run.
+genuinely new listing priced €550,000–€750,000 with at least 3 bedrooms and
+at least 100 m² living area, with no duplicate alerts for previously-seen
+listings, and no missed matching listings on a normal run.
 
 ### Phase 2 — Filtering
-- Replace the hardcoded €500k ceiling with configurable search criteria
-  (max price, min size, min rooms, etc.)
-- Notifications only fire for listings matching current criteria
-- Criteria should be easy to adjust without code changes (e.g. a config
-  file) — exact mechanism decided in `architecture.md`
+- Replace the hardcoded Phase 1 criteria with configurable search criteria
+  (the same fields — price range, min bedrooms, min size — but adjustable
+  without code changes, e.g. via a config file)
+- Neighborhood and other criteria not yet covered by Phase 1 (property
+  type, energy label, etc.) become available as filter options
+- Exact config mechanism decided in `architecture.md`
 
 ### Phase 3 — Reliable automation
 - Move from manual/ad-hoc runs to real scheduled execution (e.g. cron, or
