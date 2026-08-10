@@ -1,192 +1,776 @@
 # operations.md — Amsterdam Funda Home-Search Agent
 
-## Overview
+## Purpose
 
-This is the operational runbook: how to run the scraper manually, how it's
-scheduled, where to find logs, and what to do when something goes wrong.
-For *what* the system does, see `product.md`. For *how it's built*, see
-`architecture.md`. This file is for keeping it *running*.
+This document describes how to run, test, debug, and operate the Amsterdam Funda Home-Search Agent.
 
-## Running the scraper manually
+It complements:
 
-Always test a manual run before trusting a cron schedule — this is also
-your primary debugging tool when something looks wrong.
+* `AGENTS.md` — agent behavior, development constraints, and collaboration rules
+* `product.md` — product scope and functional requirements
+* `architecture.md` — technical design and architectural decisions
+
+This file focuses on **execution and operations**, not product requirements or implementation details.
+
+---
+
+## 1. Operating Environment
+
+The project runs on a shared Ubuntu VPS.
+
+Current environment assumptions:
+
+* Ubuntu VPS
+* 4 GB RAM
+* 2 GB swap
+* Python 3.12
+* Project-specific Python virtual environment: `.venv`
+* Git/GitHub access through SSH
+* tmux
+* outbound-only network access
+* no inbound application service is required for Phase 1
+
+The project should run under a dedicated non-root Linux user.
+
+Do not run the application as root unless a future operational requirement explicitly justifies it.
+
+---
+
+## 2. Development and Production Separation
+
+Development and production execution are separate concerns.
+
+### Development
+
+The AI coding agent runs inside the developer's tmux session.
+
+Example:
+
+```text
+SSH
+└── developer Linux user
+    └── tmux
+        └── agent-work
+            └── OpenCode
+```
+
+The `agent-work` session is for:
+
+* working with OpenCode
+* reading project files
+* editing code
+* running tests
+* running limited/manual scraper tests
+* debugging
+
+### Manual scraper/debugging
+
+A second tmux session named `scraper` is reserved for manual scraper execution and debugging.
+
+It is not the production scheduler.
+
+Example:
 
 ```bash
-cd /path/to/project        # project root, wherever it lives on the server
-source .venv/bin/activate  # if not already active in your shell
-python src/main.py
+tmux new -s scraper
 ```
 
-Watch the terminal output directly — this is the fastest way to see errors
-as they happen, before worrying about log files.
+The `scraper` session should only be used when interactive execution or debugging is useful.
 
-## Logging
+### Production
 
-Two separate logs exist, capturing different things:
+Production runs should not depend on an active tmux session.
 
-| File | What it captures | Written by |
-|---|---|---|
-| `logs/scraper.log` | Application-level events: run start/end, listings scraped, new listings found, notifications sent, parsing errors on individual listings | Python's `logging` module, inside the scraper code itself |
-| `logs/cron.log` | Raw stdout/stderr of the entire process, including crashes the application-level logger never got to log (e.g. Python crashing before logging initializes, or the process getting killed) | cron, via output redirection |
+Phase 1 production execution uses cron.
 
-Both are git-ignored (runtime data, not source).
+The intended production flow is:
 
-**To check recent activity:**
-```bash
-tail -n 50 logs/scraper.log
+```text
+cron
+  ↓
+Python entry point
+  ↓
+scrape Funda
+  ↓
+store/deduplicate
+  ↓
+filter
+  ↓
+notify Telegram
+  ↓
+exit
 ```
 
-**To watch a run live** (e.g. while testing):
-```bash
-tail -f logs/scraper.log
-```
+The process should terminate after completing a run.
 
-**If a scheduled run seems to have not happened at all** (no new log
-entries after 30+ minutes), check `cron.log` first — that's where you'd see
-a crash that happened before the application logger even started:
-```bash
-tail -n 50 logs/cron.log
-```
+---
 
-**Log rotation:** not configured yet at Phase 1 — logs will grow
-unbounded. This is fine at current scale (small text files, checked
-periodically), but revisit if `logs/scraper.log` starts growing
-noticeably large (e.g. add Python's `RotatingFileHandler`, or a simple
-`logrotate` config).
+## 3. Project Virtual Environment
 
-## Scheduling — cron setup (step by step)
+Python dependencies must be installed into the project's `.venv`.
 
-The scraper runs every 30 minutes via cron, calling the Python interpreter
-inside the project's `.venv` directly (not by activating the venv inside
-the cron job — cron's environment is minimal and activation scripts can
-behave unreliably there; calling the venv's Python binary directly sidesteps
-this entirely).
-
-**1. Find your project's absolute path** (cron needs absolute paths, not
-relative ones):
-```bash
-cd /path/to/project
-pwd
-```
-Copy this output — you'll need it below. Example used in these
-instructions: `/home/jose/projects/nl-housing-agent`.
-
-**2. Create the logs directory if it doesn't exist yet:**
-```bash
-mkdir -p logs
-```
-
-**3. Test the exact command cron will run**, before scheduling it — this
-catches path/environment issues immediately instead of debugging a silent
-cron failure later:
-```bash
-/home/jose/projects/nl-housing-agent/.venv/bin/python /home/jose/projects/nl-housing-agent/src/main.py
-```
-(Replace the path with your actual project path from step 1.) This should
-run and complete the same way your manual `python src/main.py` run did. If
-it doesn't, fix that before touching cron.
-
-**4. Open your crontab for editing:**
-```bash
-crontab -e
-```
-(First time running this, it may ask you to choose an editor — `nano` is
-the simplest choice if unsure.)
-
-**5. Add this line at the end of the file**, replacing the path with your
-actual project path:
-```
-*/30 * * * * cd /home/jose/projects/nl-housing-agent && .venv/bin/python src/main.py >> logs/cron.log 2>&1
-```
-Breaking this down:
-- `*/30 * * * *` — run every 30 minutes
-- `cd /home/jose/projects/nl-housing-agent &&` — move into the project directory first, so relative paths inside the script (e.g. `data/funda.db`) resolve correctly
-- `.venv/bin/python src/main.py` — run the script using the venv's Python directly
-- `>> logs/cron.log 2>&1` — append both normal output and errors to `cron.log`, so nothing gets silently lost
-
-**6. Save and exit.** Verify it registered:
-```bash
-crontab -l
-```
-You should see the line you just added.
-
-**7. Wait for the next 30-minute mark, then check both logs** to confirm
-it actually ran:
-```bash
-tail -n 20 logs/cron.log
-tail -n 20 logs/scraper.log
-```
-
-**To pause the scraper temporarily** (e.g. while debugging), comment out
-the line in `crontab -e` by putting a `#` at the start, rather than
-deleting it — easier to re-enable later.
-
-## Monitoring — what "healthy" looks like
-
-Check periodically (no automated alerting on failures yet — that's a
-possible Phase 4 addition, not in scope now):
-- `logs/scraper.log` shows a new run roughly every 30 minutes, with a
-  clear start/end for each
-- Telegram is receiving messages when genuinely matching new listings
-  exist (absence of messages isn't itself a problem — it just means no
-  new matches, per the filter criteria in `product.md`)
-- No repeated errors for the same cause across multiple runs
-
-## Troubleshooting
-
-### Scraper runs but finds 0 listings every time (even though Funda clearly has some)
-Likely cause: Funda changed page structure and the scraper's selectors no
-longer match anything. **This is a Learning Loop event** — diagnose it,
-fix it, and record the fix in `docs/site-notes/funda.md` per `AGENTS.md`.
-Do not just patch the selector silently; the whole point of the Learning
-Loop is that this gets documented.
-
-### Scraper fails/crashes entirely, or gets blocked (e.g. CAPTCHA, access denied)
-Check `logs/cron.log` and `logs/scraper.log` for the actual error. If it
-looks like anti-bot detection (unexpected redirect, CAPTCHA page, blank
-page where content should be), this is also a Learning Loop event —
-Funda's anti-scraping behavior changing counts as "site breakage" just as
-much as a selector change does. Do not respond by increasing scrape
-frequency or adding a paid proxy/captcha-solving service without first
-flagging it to the developer, per the no-paid-services rule in
-`AGENTS.md`.
-
-### No Telegram notifications, but scraper log shows matching listings found
-Check the Telegram bot token and chat ID in `.env` are still correct and
-the bot hasn't been blocked/removed. Test the bot independently of the
-scraper with a minimal manual message send to isolate whether the problem
-is the bot/token or the scraper's notification logic.
-
-### `database is locked` errors
-Should not happen at Phase 1 (single process, sequential runs 30 minutes
-apart), but if a manual run overlaps with a cron run, this can occur.
-Avoid running the scraper manually at the same time a scheduled run might
-be executing; if this becomes a recurring problem, it's a sign Phase 1's
-concurrency assumptions need revisiting in `architecture.md`.
-
-### Cron job doesn't seem to run at all
-- Confirm with `crontab -l` that the line is actually present and
-  uncommented
-- Confirm the paths in the cron line are absolute and correct
-- Check `logs/cron.log` — if it's completely empty (not even error output),
-  the cron job likely isn't triggering at all; check the system's cron
-  service is running (`systemctl status cron`)
-
-## Backups
-
-`data/funda.db` is the only stateful data in this system. Not automated at
-Phase 1 — periodically copy it somewhere safe if you'd be upset to lose
-scrape history:
-```bash
-cp data/funda.db data/funda.db.backup-$(date +%Y%m%d)
-```
-
-## Updating dependencies
+Before running the application manually:
 
 ```bash
 source .venv/bin/activate
-pip install -r requirements.txt --upgrade
-playwright install chromium   # keep the browser binary in sync with the playwright package version
 ```
-Test with a manual run afterward before trusting the next cron cycle.
+
+Verify:
+
+```bash
+python --version
+which python
+```
+
+The expected Python version is Python 3.12.
+
+Do not install project dependencies globally.
+
+If a required dependency is not already part of the project dependencies, follow the permission rules in `AGENTS.md` before installing it.
+
+In particular, installing Playwright or browser dependencies requires explicit approval when it constitutes a new major dependency.
+
+---
+
+## 4. Environment Variables and Secrets
+
+Secrets are stored in a `.env` file at the project root.
+
+Expected variables:
+
+```text
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
+
+The real `.env` file must never be committed to Git.
+
+`.gitignore` must exclude it.
+
+A safe template should be committed:
+
+```text
+.env.example
+```
+
+containing only placeholder values.
+
+Example:
+
+```text
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
+
+Never print the Telegram bot token in logs or terminal output.
+
+If a secret is accidentally committed, stop and treat it as a security incident rather than simply deleting it from the latest commit.
+
+---
+
+## 5. Database and Runtime Data
+
+The application uses SQLite.
+
+Expected database location:
+
+```text
+data/funda.db
+```
+
+The database is runtime data and should not be committed to Git.
+
+The database stores listings and allows the scraper to distinguish previously seen listings from newly discovered listings.
+
+Important operational behavior:
+
+```text
+Scrape listing
+      ↓
+Check listing_id
+      ↓
+Already in database?
+   ┌──┴──┐
+  YES    NO
+   ↓      ↓
+Ignore  Insert
+          ↓
+     Apply filters
+          ↓
+       Notify
+```
+
+The database should be treated as persistent application state.
+
+Do not delete or recreate it casually because doing so would cause previously seen listings to appear new again.
+
+Any destructive database operation requires explicit approval.
+
+---
+
+## 6. Logs
+
+The project should maintain application-level logs separately from cron output.
+
+Expected locations:
+
+```text
+logs/
+├── scraper.log
+└── cron.log
+```
+
+The directories/files may not exist during initial development and should be created as part of operations setup.
+
+### Application log
+
+`scraper.log` should contain enough information to understand each run without exposing secrets.
+
+At minimum, a normal successful run should record:
+
+* start time
+* end time
+* number of pages processed
+* number of listings scraped
+* number of new listings
+* number of listings matching the filter
+* number of Telegram notifications sent
+* errors or warnings
+
+Example conceptual output:
+
+```text
+Run started
+Pages processed: 4
+Listings scraped: 96
+New listings: 12
+Matching listings: 3
+Notifications sent: 3
+Run completed
+```
+
+Do not log:
+
+* Telegram bot token
+* sensitive environment values
+* unnecessary personal information
+
+---
+
+## 7. Cron Output
+
+Cron should redirect stdout/stderr to:
+
+```text
+logs/cron.log
+```
+
+The exact cron configuration should be kept simple and documented.
+
+Phase 1 target frequency is approximately every 30 minutes.
+
+The production scheduler should run the Python application directly rather than depending on:
+
+```text
+tmux
+screen
+OpenCode
+Gemini CLI
+```
+
+The AI coding environment must never be required for production execution.
+
+---
+
+## 8. Scheduled Execution
+
+The intended Phase 1 schedule is approximately:
+
+```text
+Every 30 minutes
+```
+
+The scraper should:
+
+1. Start.
+2. Launch one browser instance.
+3. Visit the relevant Amsterdam Funda search.
+4. Extract current listings.
+5. Compare listing IDs with SQLite.
+6. Store newly discovered listings.
+7. Apply the confirmed Phase 1 criteria.
+8. Send Telegram notifications for matching new listings.
+9. Log the result.
+10. Close the browser.
+11. Exit.
+
+The application must not remain resident between scheduled runs.
+
+---
+
+## 9. Resource Management
+
+The VPS has approximately 4 GB RAM.
+
+The scraper must therefore remain conservative with resources.
+
+Rules:
+
+* Run at most one browser instance concurrently.
+* Avoid unnecessary parallel scraping.
+* Do not launch multiple Chromium instances for a single run.
+* Prefer incremental processing where practical.
+* Close browser/context/page resources after each run.
+* Do not keep unnecessary data in memory.
+* Avoid aggressive polling.
+
+If a proposed implementation is likely to cause a significant memory spike, stop and flag it before implementing.
+
+---
+
+## 10. Funda Scraping Behavior
+
+Funda is the only supported listing source.
+
+The scraper should behave as an infrequent, normal browser visitor rather than continuously polling the site.
+
+Operational principles:
+
+* Use realistic pacing between page loads.
+* Avoid rapid-fire requests.
+* Keep scheduled frequency low.
+* Use a single browser instance.
+* Reuse browser/session state where the architecture permits it.
+* Do not aggressively retry after blocking or challenge responses.
+
+If Funda blocks or challenges the scraper:
+
+1. Stop aggressive retries.
+2. Record the failure clearly.
+3. Diagnose the behavior.
+4. Document the finding in `docs/site-notes/funda.md` when a scraper issue is fixed.
+5. Do not introduce paid proxies, CAPTCHA-solving services, or other paid workarounds without explicit approval.
+
+---
+
+## 11. Manual Run
+
+Before enabling cron, the scraper must be executable manually.
+
+The intended manual workflow is conceptually:
+
+```bash
+source .venv/bin/activate
+python -m src.main
+```
+
+The exact entry point may change if the project structure changes.
+
+Manual execution is used for:
+
+* initial testing
+* debugging
+* validating Funda access
+* testing extraction
+* testing database behavior
+* testing notification behavior
+
+Production scheduling should only be configured after manual execution is reliable.
+
+---
+
+## 12. Dry-Run / Limited Testing
+
+A limited or dry-run mode should be preferred while developing.
+
+The purpose is to validate:
+
+* Funda access
+* selectors
+* parsing
+* pagination
+* extracted fields
+* filtering
+* database behavior
+
+without unnecessarily sending real notifications.
+
+When a task requires a new test mode or CLI option, document the behavior in the appropriate source/docs rather than inventing undocumented operational flags.
+
+---
+
+## 13. Telegram Testing
+
+Telegram notification should be tested separately from scraping where possible.
+
+The test sequence should be:
+
+```text
+Scraper
+   ↓
+Extract listing
+   ↓
+Filter
+   ↓
+Notifier
+   ↓
+Telegram
+```
+
+A test notification should confirm:
+
+* Telegram credentials are valid.
+* The correct chat receives the message.
+* The message contains the expected listing information.
+* The Funda URL is present.
+* No secret is included in the message.
+
+Real notification testing should not be mixed into every scraper debugging run.
+
+---
+
+## 14. End-to-End Verification
+
+Before enabling production scheduling, perform an end-to-end test.
+
+Expected flow:
+
+```text
+Funda
+ ↓
+Playwright
+ ↓
+Listing extraction
+ ↓
+SQLite
+ ↓
+New listing detection
+ ↓
+Confirmed filters
+ ↓
+Telegram
+```
+
+At minimum, verify:
+
+### First run
+
+New listings are inserted into SQLite.
+
+Matching new listings produce Telegram notifications.
+
+### Second run
+
+The same listings are recognized as already known.
+
+They must not generate duplicate notifications simply because the scraper encountered them again.
+
+Conceptually:
+
+```text
+Run 1:
+New listing → INSERT → NOTIFY
+
+Run 2:
+Existing listing → IGNORE → NO duplicate notification
+```
+
+This is one of the most important Phase 1 operational tests.
+
+---
+
+## 15. Error Handling
+
+A failure in one run must not result in aggressive retry behavior.
+
+Errors should be classified where practical:
+
+### Funda access failure
+
+Examples:
+
+* page does not load
+* browser is blocked
+* challenge page appears
+* unexpected HTTP/navigation behavior
+
+Action:
+
+* log the failure
+* stop or fail the run cleanly
+* avoid rapid retries
+* investigate before changing scraping behavior
+
+### Parsing failure
+
+Examples:
+
+* selector no longer matches
+* listing card structure changed
+* expected field is missing
+
+Action:
+
+* log the affected behavior
+* diagnose the root cause
+* fix the scraper
+* add a Learning Loop entry to `docs/site-notes/funda.md`
+
+### Database failure
+
+Examples:
+
+* database unavailable
+* SQLite write error
+* schema mismatch
+
+Action:
+
+* log the error
+* do not silently mark listings as processed
+* investigate before resuming normal production runs
+
+### Telegram failure
+
+Examples:
+
+* invalid credentials
+* network failure
+* Telegram API error
+
+Action:
+
+* log the failure without exposing credentials
+* do not falsely report a notification as sent
+* preserve enough information to retry safely later
+
+---
+
+## 16. Funda Learning Loop
+
+Whenever a Funda scraper problem is diagnosed and fixed, update:
+
+```text
+docs/site-notes/funda.md
+```
+
+The entry should contain:
+
+* date
+* symptom
+* diagnosis
+* fix
+* optional pattern/warning
+
+Example structure:
+
+```markdown
+### YYYY-MM-DD — <short description>
+
+- **Symptom:** ...
+- **Diagnosis:** ...
+- **Fix:** ...
+- **Pattern/Warning:** ...
+```
+
+This prevents future sessions and future agents from rediscovering the same Funda behavior from scratch.
+
+---
+
+## 17. Git and Shared Repository Operations
+
+The repository is shared between two developers using different coding agents.
+
+* Yousef uses Gemini CLI.
+* Rashid uses OpenCode CLI.
+
+Neither agent should assume that the working tree or remote branch belongs exclusively to it.
+
+Before making changes:
+
+```bash
+git status
+git branch --show-current
+git remote -v
+```
+
+Before starting substantial work, make sure the local branch is understood and that recent remote changes have been considered.
+
+Do not overwrite another developer's work.
+
+### Push permission
+
+`git push` requires explicit permission according to `AGENTS.md`.
+
+A local commit may be created when appropriate, but pushing it to the remote repository requires confirmation.
+
+### Documentation changes
+
+Changes to:
+
+```text
+AGENTS.md
+product.md
+architecture.md
+operations.md
+```
+
+should be committed together when they represent one coherent documentation update.
+
+---
+
+## 18. Deployment Principle
+
+Phase 1 should avoid unnecessary deployment complexity.
+
+The production scraper is a scheduled outbound process.
+
+There is no requirement for:
+
+* public HTTP server
+* inbound port
+* dashboard
+* web API
+* persistent application server
+
+Therefore, do not add an inbound service merely to make the scraper run.
+
+The basic production architecture remains:
+
+```text
+cron
+ ↓
+Python process
+ ↓
+Funda
+ ↓
+SQLite
+ ↓
+Telegram
+```
+
+---
+
+## 19. Backups
+
+The main persistent runtime state is:
+
+```text
+data/funda.db
+```
+
+SQLite does not provide automatic backup or replication in this architecture.
+
+Backups are therefore an operational responsibility.
+
+For Phase 1, backups are not part of the scraper's core functionality, but the database should be periodically copied if the stored history becomes important.
+
+Do not introduce a backup service or external paid storage without an explicit requirement.
+
+---
+
+## 20. Operational Checklist
+
+### Before first production run
+
+* [ ] Git repository is correctly configured.
+* [ ] Correct branch/workflow is being used.
+* [ ] `.venv` is available.
+* [ ] Required dependencies are installed.
+* [ ] `.env` exists locally.
+* [ ] `.env` is ignored by Git.
+* [ ] Telegram credentials are configured.
+* [ ] Funda access has been manually tested.
+* [ ] Listing extraction has been tested.
+* [ ] SQLite database creation has been tested.
+* [ ] Deduplication has been tested.
+* [ ] Filtering criteria have been confirmed.
+* [ ] Telegram notification has been tested.
+* [ ] End-to-end execution has succeeded.
+* [ ] Logs are working.
+* [ ] Cron configuration has been reviewed.
+
+### After enabling cron
+
+Check:
+
+```text
+logs/scraper.log
+logs/cron.log
+```
+
+Verify:
+
+* runs are occurring at the expected interval
+* listings are being extracted
+* new listings are being detected
+* duplicate notifications are not occurring
+* Telegram notifications are delivered
+* no recurring Funda errors are appearing
+
+---
+
+## 21. Troubleshooting Order
+
+When something fails, do not immediately modify multiple components.
+
+Check in this order:
+
+```text
+1. Is the scheduled process running?
+        ↓
+2. Is Python/.venv correct?
+        ↓
+3. Can the browser reach Funda?
+        ↓
+4. Can listing cards be found?
+        ↓
+5. Are fields extracted correctly?
+        ↓
+6. Is SQLite working?
+        ↓
+7. Is deduplication working?
+        ↓
+8. Are filters correct?
+        ↓
+9. Is Telegram configured/reachable?
+        ↓
+10. Is the notification being sent?
+```
+
+This keeps failures isolated and makes debugging easier.
+
+---
+
+## 22. Current Operational Boundaries
+
+The following are intentionally outside the current Phase 1 operations scope:
+
+* public dashboard
+* web API
+* multi-site scraping
+* multiple concurrent browsers
+* paid proxy infrastructure
+* paid CAPTCHA solving
+* inbound network services
+* complex orchestration platforms
+* distributed databases
+* high-availability infrastructure
+
+These should only be introduced if a future product or architecture decision explicitly requires them.
+
+---
+
+## 23. Future Operational Decisions
+
+The following remain open for future phases:
+
+* log rotation strategy
+* automated failure monitoring
+* database backup automation
+* more robust scheduling if cron becomes insufficient
+* improved alerting for scraper failures
+* operational metrics
+* recovery behavior after extended Funda outages
+
+These should be decided when the project reaches the relevant phase rather than prematurely adding infrastructure now.
