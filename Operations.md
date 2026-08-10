@@ -13,7 +13,7 @@ Always test a manual run before trusting a cron schedule — this is also
 your primary debugging tool when something looks wrong.
 
 ```bash
-cd ~/projects/nl-housing-agent        # project root, wherever it lives on the server
+cd /path/to/project        # project root, wherever it lives on the server
 source .venv/bin/activate  # if not already active in your shell
 python src/main.py
 ```
@@ -66,11 +66,11 @@ this entirely).
 **1. Find your project's absolute path** (cron needs absolute paths, not
 relative ones):
 ```bash
-cd ~/projects/nl-housing-agent
+cd /path/to/project
 pwd
 ```
 Copy this output — you'll need it below. Example used in these
-instructions: `~/projects/nl-housing-agent`.
+instructions: `/home/jose/projects/nl-housing-agent`.
 
 **2. Create the logs directory if it doesn't exist yet:**
 ```bash
@@ -81,7 +81,7 @@ mkdir -p logs
 catches path/environment issues immediately instead of debugging a silent
 cron failure later:
 ```bash
-~/projects/nl-housing-agent/.venv/bin/python ~/projects/nl-housing-agent/src/main.py
+/home/jose/projects/nl-housing-agent/.venv/bin/python /home/jose/projects/nl-housing-agent/src/main.py
 ```
 (Replace the path with your actual project path from step 1.) This should
 run and complete the same way your manual `python src/main.py` run did. If
@@ -97,11 +97,11 @@ the simplest choice if unsure.)
 **5. Add this line at the end of the file**, replacing the path with your
 actual project path:
 ```
-*/30 * * * * cd ~/projects/nl-housing-agent && .venv/bin/python src/main.py >> logs/cron.log 2>&1
+*/30 * * * * cd /home/jose/projects/nl-housing-agent && .venv/bin/python src/main.py >> logs/cron.log 2>&1
 ```
 Breaking this down:
 - `*/30 * * * *` — run every 30 minutes
-- `cd ~/projects/nl-housing-agent &&` — move into the project directory first, so relative paths inside the script (e.g. `data/funda.db`) resolve correctly
+- `cd /home/jose/projects/nl-housing-agent &&` — move into the project directory first, so relative paths inside the script (e.g. `data/funda.db`) resolve correctly
 - `.venv/bin/python src/main.py` — run the script using the venv's Python directly
 - `>> logs/cron.log 2>&1` — append both normal output and errors to `cron.log`, so nothing gets silently lost
 
