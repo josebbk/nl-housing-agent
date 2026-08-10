@@ -1,130 +1,353 @@
 # product.md — Amsterdam Funda Home-Search Agent
 
-## Overview
+---
 
-A personal tool that scrapes Funda.nl for-sale listings in Amsterdam,
-detects new listings as they're published, and sends the developer a
-Telegram notification so they can act on new homes for sale quickly —
-without manually refreshing Funda search pages.
+## 1. Product Overview
 
-## Who this is for
+The Amsterdam Funda Home-Search Agent is an automated tool that monitors
+residential properties for sale in Amsterdam on **Funda.nl** and notifies the
+developer/owner through Telegram when a newly detected listing matches the
+agreed housing criteria.
 
-Single user (the developer), searching for a home to buy in Amsterdam.
-Not a product for other users, not a commercial service. No multi-user
-support, accounts, or billing are in scope.
+The primary goal is to reduce the need for manually checking Funda and to
+deliver potentially suitable new properties to the owner quickly enough to be
+useful in the Amsterdam housing market.
 
-## Goal
+### Product scope
 
-Be notified of new Funda "for sale" listings in Amsterdam as close to
-publish-time as practical, so the developer has a speed advantage over
-manually checking the site — a meaningful edge in a competitive housing
-market where good listings can attract offers within days.
+The initial product is intentionally limited to:
 
-## Scope
+* Amsterdam
+* properties for sale
+* Funda.nl
+* automated periodic checking
+* new-listing detection
+* configurable housing criteria
+* Telegram notifications
 
-**In scope:**
-- Funda.nl only (see `AGENTS.md` — single-site by design, no multi-site
-  abstractions)
-- **For-sale listings only** (koop) — not rentals (huur)
-- **Amsterdam, city-wide** — no neighborhood restriction for now
-- Detecting *new* listings (not previously seen by the scraper)
-- Sending a Telegram notification per new listing found
-- Storing scraped listing data in a structured, queryable form (exact
-  storage mechanism is an `architecture.md` decision, not a product
-  decision)
+Other real-estate websites are outside the current product scope.
 
-**Out of scope (for now — may revisit later):**
-- Rental listings
-- Any site other than Funda
-- Neighborhood-specific filtering
-- Price/size/room filtering (deferred to Phase 2 — see Roadmap)
-- Multi-user support, web dashboard, or public-facing product
-- Any paid infrastructure (proxies, captcha solving, paid APIs) per the
-  hard rule in `AGENTS.md`
+---
 
-## Data to capture per listing
+## 2. Target User
 
-Minimum fields the scraper must extract for each Funda listing:
+The primary recipient of the system's notifications is the project owner /
+developer who is interested in finding suitable homes in Amsterdam.
 
-| Field | Notes |
-|---|---|
-| Listing ID / URL | Unique identifier — used for dedup (has this listing been seen before?) |
-| Address | Street + house number |
-| Neighborhood/area | As listed on Funda (not filtered on yet, but useful later) |
-| Asking price | Numeric, EUR |
-| Living area (m²) | |
-| Plot size (m²) | If applicable (not all listings, e.g. apartments) |
-| Number of rooms | Total rooms |
-| Number of bedrooms | If Funda distinguishes this from total rooms |
-| Property type | Apartment (appartement), house (woonhuis), etc. |
-| Year built | If available |
-| Energy label | If available |
-| Listing status | Available, under offer ("onder bod"), sold, etc. |
-| First-seen date/time | Set by the scraper, not Funda — this is when *our system* first recorded it, used to determine "new" |
-| Listing published date | If Funda exposes this directly (may differ from first-seen if the scraper isn't running continuously) |
+The system is not currently intended to be a public consumer application.
 
-Exact scraping method (HTML parsing vs. API-like endpoints Funda may use
-internally, whether Playwright is needed) is decided in `architecture.md`,
-not here.
+It is a personal/internal automation tool.
 
-## Notifications
+---
 
-- **Channel:** Telegram bot, messaging the developer directly
-- **Trigger (MVP):** A listing detected as new (not previously seen)
-  triggers a notification only if it matches all Phase 1 filter criteria:
-  price €550,000–€750,000, ≥3 bedrooms, ≥100 m² living area (see Roadmap).
-  Listings that don't match are still stored, just not notified.
-- **Message content (minimum):** Address, price, size, rooms, link to the
-  Funda listing
-- Bot setup details (token management, chat ID, message formatting) belong
-  in `architecture.md` and/or `operations.md`, not here
+## 3. Core User Outcome
 
-## Roadmap
+The desired user experience is:
 
-### Phase 1 — MVP (current target)
-- Scrape Funda for-sale Amsterdam listings
-- Store listings in structured storage with the fields above
-- Detect new listings via dedup against previously stored listings
-- Apply hardcoded Phase 1 filter criteria — all listings stored regardless,
-  but notifications only fire for listings matching **all** of:
-  - Price between €550,000 and €750,000 (inclusive)
-  - Minimum 3 bedrooms
-  - Minimum 100 m² living area
-- Send a Telegram notification for every new listing matching all three
-  criteria above
-- Runs on manual/scheduled trigger (scheduling mechanism decided in
-  `architecture.md`)
+```text
+Funda
+  ↓
+Amsterdam for-sale listings
+  ↓
+Agent periodically checks listings
+  ↓
+New listing detected
+  ↓
+Housing criteria evaluated
+  ↓
+Suitable?
+  ├── No → Store / ignore notification
+  │
+  └── Yes
+       ↓
+     Telegram
+       ↓
+     Owner
+```
 
-**Definition of done for Phase 1:** Running the scraper against live Funda
-Amsterdam search results reliably produces a Telegram message for each
-genuinely new listing priced €550,000–€750,000 with at least 3 bedrooms and
-at least 100 m² living area, with no duplicate alerts for previously-seen
-listings, and no missed matching listings on a normal run.
+The owner should receive a Telegram notification for a newly detected listing
+that matches the confirmed Phase 1 criteria.
 
-### Phase 2 — Filtering
-- Replace the hardcoded Phase 1 criteria with configurable search criteria
-  (the same fields — price range, min bedrooms, min size — but adjustable
-  without code changes, e.g. via a config file)
-- Neighborhood and other criteria not yet covered by Phase 1 (property
-  type, energy label, etc.) become available as filter options
-- Exact config mechanism decided in `architecture.md`
+---
 
-### Phase 3 — Reliable automation
-- Move from manual/ad-hoc runs to real scheduled execution (e.g. cron, or
-  a persistent process in the `scraper` tmux session)
-- Add basic monitoring: know if a scheduled run failed or Funda's page
-  structure broke the scraper (ties into the Learning Loop in `AGENTS.md`)
+## 4. Phase 1 Product Scope
 
-### Phase 4 — Nice-to-haves (not committed, revisit after Phase 1–3 work)
-- Neighborhood-specific filtering
-- Price-change tracking on already-seen listings (e.g. price drops)
-- Simple history view/dashboard of everything scraped so far
-- Listing status tracking (e.g. flag when a previously-seen listing goes
-  "under offer" or is delisted)
+Phase 1 focuses on the minimum useful automated workflow:
 
-## Open decisions (intentionally deferred, not forgotten)
+1. Scrape current Amsterdam for-sale listings from Funda.
+2. Extract the required listing information.
+3. Identify listings that have not previously been seen.
+4. Store listing information locally.
+5. Apply the agreed property filters.
+6. Send a Telegram notification for each newly detected matching listing.
+7. Run the process periodically.
 
-- Concrete filter criteria (budget, size, rooms) — will be defined once
-  Phase 1 is working and real data is available to calibrate against
-- Storage technology, dedup mechanism, scraping method, scheduling
-  mechanism — all `architecture.md` decisions, out of scope for this file
+The first implementation should prioritize reliability and clarity over
+advanced features.
+
+---
+
+## 5. Listing Information
+
+The system should attempt to collect the following information for each
+listing:
+
+* Funda listing ID
+* Funda URL
+* address
+* neighborhood
+* asking price
+* living area in m²
+* plot size in m², where available
+* number of rooms
+* number of bedrooms, where available
+* property type
+* construction year, where available
+* energy label, where available
+* current status
+* first-seen timestamp
+* whether a notification was sent
+
+The exact technical extraction method belongs to `architecture.md`.
+
+---
+
+## 6. New Listing Detection
+
+A listing is considered new when its unique Funda listing identifier has not
+previously been stored by the agent.
+
+The system should not repeatedly notify the owner about the same listing simply
+because the scraper encounters it again during a later run.
+
+The initial deduplication key is the Funda listing ID derived from the listing
+URL.
+
+---
+
+## 7. Phase 1 Filtering Criteria
+
+The currently documented detailed Phase 1 criteria are:
+
+* **Price:** €550,000–€750,000
+* **Bedrooms:** at least 3
+* **Living area:** at least 100 m²
+
+These criteria are currently recorded as the **working Phase 1 criteria**.
+
+### Important unresolved price contradiction
+
+An earlier version of `architecture.md` described the notification rule as:
+
+> at or below €500,000
+
+while the detailed Phase 1 criteria described later in the same document
+specified:
+
+> €550,000–€750,000
+
+These requirements are contradictory.
+
+Therefore:
+
+**The final price range must be confirmed by the project owner before the
+filter is considered a final product requirement.**
+
+Until confirmation is received, agents must not silently replace one range
+with the other.
+
+Once confirmed, the selected price range must become the single source of
+truth in this document and `architecture.md`.
+
+---
+
+## 8. Telegram Notification
+
+For a newly detected listing that matches the confirmed Phase 1 criteria,
+the agent should send a Telegram notification.
+
+At minimum, the notification should contain:
+
+* address
+* asking price
+* living area
+* number of rooms
+* Funda listing URL
+
+A future version may include additional useful information such as:
+
+* bedrooms
+* neighborhood
+* property type
+* energy label
+* construction year
+* plot size
+
+These additional fields are not required for the initial notification unless
+the implementation naturally supports them.
+
+---
+
+## 9. Notification Rules
+
+The intended notification rule is:
+
+```text
+Listing is new
+        AND
+Listing matches all confirmed Phase 1 filters
+        ↓
+Send Telegram notification
+```
+
+A listing that does not match the filters may still be stored so that the
+system knows it has already been seen.
+
+The same listing should not generate repeated "new listing" notifications on
+every scheduled run.
+
+---
+
+## 10. Scheduling
+
+The initial intended schedule is periodic checking approximately every
+30 minutes.
+
+The exact scheduling mechanism is an implementation/operations decision and
+is currently planned to use cron during Phase 1.
+
+The schedule may be adjusted later if testing shows that:
+
+* Funda detection/blocking becomes an issue
+* the frequency is unnecessarily aggressive
+* the frequency is too slow for the intended use
+
+---
+
+## 11. Product Constraints
+
+The initial product must respect the following constraints:
+
+### Funda only
+
+The system must not scrape other real-estate platforms unless the project
+scope is explicitly expanded.
+
+### No paid scraping infrastructure
+
+The product must not depend on:
+
+* paid proxy services
+* paid CAPTCHA solving
+* paid scraping APIs
+* paid AI/API tiers
+
+without explicit owner approval.
+
+### Low resource usage
+
+The agent runs on a VPS with approximately 4GB RAM and should avoid
+unnecessary resource-intensive processing.
+
+### Internal tool
+
+This is an internal/personal automation tool rather than a public SaaS
+product.
+
+---
+
+## 12. Phase Roadmap
+
+### Phase 1 — Basic Monitoring
+
+Goal:
+
+* Funda Amsterdam scraping
+* listing extraction
+* new-listing detection
+* SQLite storage
+* confirmed property filtering
+* Telegram notification
+* periodic execution
+
+### Phase 2 — Improved Filtering
+
+Potential future work:
+
+* configurable filters
+* more detailed property preferences
+* better notification formatting
+* additional ranking/scoring
+
+Phase 2 details are not finalized.
+
+### Phase 3 — Reliability and Operations
+
+Potential future work:
+
+* stronger scheduling/monitoring
+* failure detection
+* better operational reporting
+* scraper health monitoring
+
+### Phase 4 — Historical Analysis
+
+Potential future work:
+
+* price trends
+* listing history
+* property comparisons
+* historical market analysis
+
+These phases are roadmap ideas and must not be implemented prematurely
+without a task explicitly requesting them.
+
+---
+
+## 13. Out of Scope
+
+The following are currently outside the product scope:
+
+* scraping other real-estate websites
+* public web dashboards
+* user accounts
+* multi-user support
+* mobile applications
+* automatic house purchasing
+* automatic bidding
+* contacting real-estate agents automatically
+* paid proxy/CAPTCHA infrastructure
+* predictive property valuation
+* advanced machine-learning recommendation systems
+
+These may only be introduced through an explicit scope decision.
+
+---
+
+## 14. Product Decisions Requiring Confirmation
+
+The following item requires confirmation before being treated as final:
+
+### Price range
+
+There is a documented conflict between:
+
+* `≤ €500,000`
+* `€550,000–€750,000`
+
+The detailed Phase 1 requirement currently records **€550,000–€750,000 as
+the working criteria**, but this is not considered final until confirmed by
+the project owner.
+
+---
+
+## 15. Product Source of Truth
+
+When implementation behavior conflicts with this document, the discrepancy
+must be investigated rather than silently resolved.
+
+Changes to product scope or requirements must be reflected in this file.
+
+Technical implementation decisions belong in `architecture.md`.
+
+Operational procedures belong in `operations.md`.
