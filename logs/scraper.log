@@ -25,3 +25,6 @@
 2026-08-10 11:30:01,742 [INFO] === Run started (STUB — no real scraping logic yet) ===
 2026-08-10 11:30:01,742 [INFO] This is a placeholder to validate cron + logging mechanics.
 2026-08-10 11:30:01,742 [INFO] === Run finished ===
+2026-08-10 12:00:01,953 [INFO] === Run started (STUB — no real scraping logic yet) ===
+2026-08-10 12:00:01,953 [INFO] This is a placeholder to validate cron + logging mechanics.
+2026-08-10 12:00:01,953 [INFO] === Run finished ===
