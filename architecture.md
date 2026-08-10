@@ -165,6 +165,9 @@ project-root/
 ├── requirements.txt
 ├── data/
 │   └── funda.db                (SQLite — git-ignored, it's runtime data)
+├── logs/
+│   ├── scraper.log              (application-level logging — git-ignored)
+│   └── cron.log                 (raw stdout/stderr from cron runs — git-ignored)
 ├── docs/
 │   └── site-notes/
 │       └── funda.md            (Learning Loop, per AGENTS.md)
