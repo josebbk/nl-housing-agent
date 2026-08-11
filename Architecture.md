@@ -4,8 +4,9 @@
 
 A Python-based scraper that runs periodically, extracts current for-sale
 Amsterdam listings from Funda using Playwright, detects listings not seen
-before, stores them in SQLite, applies the confirmed Phase 1 property filters,
-and sends Telegram notifications for newly detected matching listings.
+before, stores them in SQLite, applies the confirmed Phase 1 property filters
+(€550,000–€750,000 asking price, ≥3 bedrooms, ≥100 m² living area), and sends
+Telegram notifications for newly detected matching listings.
 
 The product-level requirements are defined in `product.md`.
 
@@ -47,6 +48,16 @@ tmux is used to keep development and debugging sessions persistent.
 | Secrets              | `.env` + `python-dotenv`                                                   | Keeps Telegram credentials out of Git                                                                               |
 | Terminal persistence | tmux                                                                       | Keeps development/manual execution sessions alive across SSH disconnects                                            |
 | Version control      | Git/GitHub                                                                 | Shared repository and collaboration between developers                                                              |
+
+---
+
+## Playwright & Browser Dependency Rule
+
+**Playwright and browser binaries (Chromium) must ONLY be installed when explicitly requested by a task.**
+
+* Do not install Playwright, Chromium, or OS-level browser dependencies during initial environment setup or as speculative preparation for future tasks.
+* Before installing browser dependencies, agents must confirm that the task explicitly requires installation and that the system remains within the 4GB VPS memory ceiling.
+* Once installed, Playwright execution must be limited to a single browser instance at a time to prevent Out-Of-Memory (OOM) crashes.
 
 ---
 
@@ -113,41 +124,17 @@ scraping failures and notification failures are easier to diagnose.
 
 ---
 
-## Phase 1 Filtering
+## Phase 1 Filtering Criteria
 
-The detailed Phase 1 working criteria are currently:
+The confirmed Phase 1 filtering criteria serve as the single source of truth across all project documentation:
 
-* Price: **€550,000–€750,000**
-* Bedrooms: **≥3**
-* Living area: **≥100 m²**
+* **Price:** €550,000–€750,000 (Confirmed)
+* **Bedrooms:** ≥3
+* **Living area:** ≥100 m²
 
-### Price requirement conflict
+### Resolution of Legacy Requirements
 
-An earlier version of this architecture document stated:
-
-> notification for new listings at or below €500,000
-
-while the detailed Phase 1 criteria stated:
-
-> €550,000–€750,000
-
-These two rules conflict.
-
-The detailed range of **€550,000–€750,000 is currently retained as the
-working architecture assumption**, because it is the more specific Phase 1
-criterion.
-
-However, it is **not final until confirmed by the project owner**.
-
-No implementation should treat the price range as permanently settled until
-the owner confirms the intended range.
-
-After confirmation:
-
-1. Update `product.md`.
-2. Update this section.
-3. Remove the obsolete alternative from active requirements.
-4. Ensure the scraper implementation matches the confirmed requirement.
+The price range has been explicitly confirmed as **€550,000–€750,000** by the project owner. Legacy references to `≤ €500,000` are fully resolved and superseded. The scraper implementation must strictly enforce this range.
 
 ---
 
@@ -417,6 +404,7 @@ The VPS has approximately:
 
 The architecture therefore intentionally uses:
 
+* Playwright/Chromium installation deferred until explicitly required by a task
 * one browser instance at a time
 * sequential processing
 * SQLite instead of a database server
@@ -428,31 +416,11 @@ Avoid unnecessary concurrency.
 
 ## Open Decisions
 
-The following decisions remain open or require confirmation.
+The following decisions remain open or require further testing:
 
-### 1. Final Phase 1 price range
-
-Documented conflict:
-
-```text
-Earlier:
-≤ €500,000
-
-Detailed Phase 1 criteria:
-€550,000–€750,000
-```
-
-Current working assumption:
-
-```text
-€550,000–€750,000
-```
-
-Status:
-
-**Requires owner confirmation.**
-
-No agent should silently treat this as final.
+### 1. Phase 1 Price Range (Resolved)
+* **Status:** Resolved / Confirmed.
+* **Value:** €550,000–€750,000.
 
 ### 2. Exact Playwright behavior
 
@@ -491,7 +459,7 @@ The project should follow these principles:
 3. Funda is the only supported scraping target.
 4. Avoid paid infrastructure.
 5. Avoid unnecessary concurrency.
-6. Keep resource usage compatible with the 4GB VPS.
+6. Keep resource usage compatible with the 4GB VPS (including deferred browser installation).
 7. Separate scraping, storage, filtering, notification, and orchestration.
 8. Keep secrets outside Git.
 9. Preserve project knowledge in documentation.
