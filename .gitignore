@@ -1,3 +1,18 @@
+# Local Environment Variables
 .env
+
+# Python Virtual Environment
 .venv/
+venv/
+
+# Database files
+data/*.db
+data/funda.db
+
+# Log files and directories
+logs/
+*.log
+
+# Python cache files
 __pycache__/
+*.pyc
