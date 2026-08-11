@@ -16,3 +16,7 @@ logs/
 # Python cache files
 __pycache__/
 *.pyc
+
+# OpenCode local files
+.opencode/
+.opencode*
