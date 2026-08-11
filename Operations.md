@@ -56,7 +56,7 @@ SSH
 
 The `agent-work` session is for:
 
-* working with OpenCode
+* working with OpenCode / Gemini CLI
 * reading project files
 * editing code
 * running tests
@@ -105,7 +105,7 @@ The process should terminate after completing a run.
 
 ---
 
-## 3. Project Virtual Environment
+## 3. Project Virtual Environment & Browser Dependency Rule
 
 Python dependencies must be installed into the project's `.venv`.
 
@@ -126,9 +126,11 @@ The expected Python version is Python 3.12.
 
 Do not install project dependencies globally.
 
-If a required dependency is not already part of the project dependencies, follow the permission rules in `AGENTS.md` before installing it.
+### Browser Dependency Rule
+**Playwright and browser binaries (Chromium) must ONLY be installed when explicitly requested by a task.**
 
-In particular, installing Playwright or browser dependencies requires explicit approval when it constitutes a new major dependency.
+* Do not install Playwright, Chromium, or OS-level browser dependencies during initial environment setup or as speculative preparation for future tasks.
+* Before installing browser dependencies, agents must confirm that the task explicitly requires installation and that the system remains within the 4GB VPS memory ceiling.
 
 ---
 
@@ -316,6 +318,7 @@ The scraper must therefore remain conservative with resources.
 
 Rules:
 
+* Playwright and browser binaries must only be installed when explicitly requested by a task.
 * Run at most one browser instance concurrently.
 * Avoid unnecessary parallel scraping.
 * Do not launch multiple Chromium instances for a single run.
