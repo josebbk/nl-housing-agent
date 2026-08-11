@@ -127,37 +127,15 @@ URL.
 
 ## 7. Phase 1 Filtering Criteria
 
-The currently documented detailed Phase 1 criteria are:
+The confirmed Phase 1 filtering criteria are:
 
-* **Price:** €550,000–€750,000
+* **Price:** €550,000–€750,000 (Confirmed single source of truth for Phase 1)
 * **Bedrooms:** at least 3
 * **Living area:** at least 100 m²
 
-These criteria are currently recorded as the **working Phase 1 criteria**.
+### Resolution of Price Range Requirement
 
-### Important unresolved price contradiction
-
-An earlier version of `architecture.md` described the notification rule as:
-
-> at or below €500,000
-
-while the detailed Phase 1 criteria described later in the same document
-specified:
-
-> €550,000–€750,000
-
-These requirements are contradictory.
-
-Therefore:
-
-**The final price range must be confirmed by the project owner before the
-filter is considered a final product requirement.**
-
-Until confirmation is received, agents must not silently replace one range
-with the other.
-
-Once confirmed, the selected price range must become the single source of
-truth in this document and `architecture.md`.
+The price range has been explicitly confirmed by the project owner as **€550,000–€750,000** for Phase 1. Any legacy references to `≤ €500,000` are superseded by this decision. This range serves as the active single source of truth across all project documentation.
 
 ---
 
@@ -256,7 +234,7 @@ product.
 
 ---
 
-## 12. Phase Roadmap
+## 12. Phase Roadmap & Definition of Done
 
 ### Phase 1 — Basic Monitoring
 
@@ -269,6 +247,32 @@ Goal:
 * confirmed property filtering
 * Telegram notification
 * periodic execution
+
+#### Phase 1 Definition of Done (DoD)
+
+Phase 1 is considered complete and ready for production monitoring when all of the following criteria are verifiably met:
+
+1. **Scraping & Data Extraction:**
+   * Scraper successfully extracts live Amsterdam for-sale listings from Funda without throwing unhandled exceptions.
+   * All mandatory listing fields (Funda ID, URL, address, asking price, living area m², total rooms) are parsed correctly and consistently.
+
+2. **Deduplication & Local Storage:**
+   * Scraped listings are stored locally in SQLite with all mandatory metadata fields and timestamps.
+   * Subsequent scraper runs correctly identify previously seen listings by Funda Listing ID and do not treat them as new.
+
+3. **Filter Accuracy:**
+   * Filters strictly evaluate the confirmed criteria: Price €550,000–€750,000, Bedrooms ≥ 3, Living Area ≥ 100 m².
+   * Non-matching listings are stored in the database but do NOT trigger Telegram notifications.
+   * Matching new listings consistently trigger notifications.
+
+4. **Notification Delivery:**
+   * Telegram messages are successfully dispatched to the configured `TELEGRAM_CHAT_ID` using `TELEGRAM_BOT_TOKEN`.
+   * Message layout includes all required fields (Address, Price, Living Area, Rooms, Direct Funda URL) and renders cleanly on Telegram clients.
+
+5. **Operational Health & Anti-Bot Safety:**
+   * Running the scraper sequentially or via scheduled triggers produces zero duplicate alerts.
+   * Request delays and browser resource management comply with the 4GB RAM ceiling and anti-bot pacing rules.
+   * Diagnostic logging records execution steps, listings evaluated, alerts sent, and any extraction anomalies.
 
 ### Phase 2 — Improved Filtering
 
@@ -324,20 +328,14 @@ These may only be introduced through an explicit scope decision.
 
 ---
 
-## 14. Product Decisions Requiring Confirmation
+## 14. Confirmed Product Decisions
 
-The following item requires confirmation before being treated as final:
+The following product decisions have been confirmed and serve as project ground truth:
 
 ### Price range
-
-There is a documented conflict between:
-
-* `≤ €500,000`
-* `€550,000–€750,000`
-
-The detailed Phase 1 requirement currently records **€550,000–€750,000 as
-the working criteria**, but this is not considered final until confirmed by
-the project owner.
+* **Status:** Confirmed.
+* **Value:** €550,000–€750,000.
+* **Notes:** Serves as the single source of truth for Phase 1 filtering logic. May be made configurable or adjusted in Phase 2.
 
 ---
 
