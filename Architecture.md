@@ -134,7 +134,7 @@ The confirmed Phase 1 filtering criteria serve as the single source of truth acr
 
 ### Resolution of Legacy Requirements
 
-The price range has been explicitly confirmed as **€550,000–€750,000** by the project owner. Legacy references to `≤ €500,000` are fully resolved and superseded. The scraper implementation must strictly enforce this range.
+The price range has been explicitly confirmed as **€550,000–€750,000** by the project owner. The scraper implementation must strictly enforce this range.
 
 ---
 
