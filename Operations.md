@@ -400,6 +400,31 @@ without unnecessarily sending real notifications.
 
 When a task requires a new test mode or CLI option, document the behavior in the appropriate source/docs rather than inventing undocumented operational flags.
 
+### CLI flags
+
+`python -m src.main` supports:
+
+* `--dry-run` — runs scraping, storage, and filtering but skips Telegram
+  notifications. Listings are stored but never marked as notified, so a later
+  real run can still notify them.
+* `--db-path PATH` — overrides the SQLite database path. Defaults to
+  `data/funda.db` under the project root.
+
+### Exit codes
+
+`python -m src.main` exits with:
+
+* `0` — successful run (notifications delivered, or dry-run).
+* `1` — failed run. Possible causes: database initialisation failure, scraper
+  exception, a scrape that returned 0 listings (may indicate an Akamai/reCAPTCHA
+  challenge or a Funda page-structure change), a storage read failure, or one or
+  more failed Telegram notifications.
+
+A failed notification never marks a listing as notified, so a later run retries
+it safely. The run is also treated as failed when the scrape returns 0 listings
+so a Funda anti-bot interstitial is not silently reported as an empty
+successful run.
+
 ---
 
 ## 13. Telegram Testing
