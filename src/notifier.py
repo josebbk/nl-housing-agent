@@ -1,0 +1,250 @@
+"""
+Telegram notification sender for the Amsterdam housing scraper.
+
+Loads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from .env via python-dotenv.
+Sends formatted messages to a Telegram group chat when matching listings
+are found.
+
+Does NOT import storage.py or scraper.py — orchestration belongs in main.py.
+"""
+
+import json
+import logging
+import os
+from pathlib import Path
+from urllib import request, error
+
+from dotenv import load_dotenv
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENV_PATH = _PROJECT_ROOT / ".env"
+
+_TELEGRAM_API_BASE = "https://api.telegram.org"
+_SEND_MSG_PATH = "/bot{token}/sendMessage"
+_MESSAGE_DELAY = 1.1  # seconds between messages (Telegram rate limit safety)
+
+
+def _load_env() -> None:
+    """Load .env from the project root if present."""
+    if _ENV_PATH.exists():
+        load_dotenv(_ENV_PATH)
+        logger.debug("Loaded .env from %s", _ENV_PATH)
+    else:
+        logger.warning(".env file not found at %s", _ENV_PATH)
+
+
+def _get_token() -> str:
+    """Return the Telegram bot token from environment."""
+    _load_env()
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN is not set in the environment. "
+            "Ensure .env contains a valid token."
+        )
+    return token
+
+
+def _get_chat_id() -> str:
+    """Return the Telegram chat ID from environment."""
+    _load_env()
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not chat_id:
+        raise RuntimeError(
+            "TELEGRAM_CHAT_ID is not set in the environment. "
+            "Ensure .env contains a valid group chat ID."
+        )
+    return chat_id
+
+
+def _format_listing_message(listing: dict) -> str:
+    """Format a listing dict into a clean Telegram HTML message.
+
+    Includes: address, price, living area, bedrooms, property type,
+    and a clickable link to the Funda listing.
+    """
+    address = listing.get("address", "N/A")
+    price = listing.get("price")
+    price_text = f"{price:,.0f}" if price is not None else "N/A"
+    living_area = listing.get("living_area_m2")
+    area_text = f"{living_area} m²" if living_area is not None else "N/A"
+    bedrooms = listing.get("bedrooms")
+    bed_text = str(bedrooms) if bedrooms is not None else "N/A"
+    property_type = listing.get("property_type", "")
+    url = listing.get("url", "")
+
+    parts = [
+        f"<b>{address}</b>",
+        f"Price: <b>{price_text} EUR</b>",
+        f"Size: {area_text}",
+        f"Bedrooms: {bed_text}",
+    ]
+
+    if property_type:
+        parts.append(f"Type: {property_type}")
+
+    if url:
+        parts.append(f'<a href="{url}">View on Funda</a>')
+
+    return "\n".join(parts)
+
+
+def _send_message(token: str, chat_id: str, message: str) -> bool:
+    """Send a single message via the Telegram Bot API.
+
+    Returns True on success, False on failure.
+    Never logs the token value.
+    """
+    url = f"{_TELEGRAM_API_BASE}{_SEND_MSG_PATH.format(token=token)}"
+
+    payload = json.dumps({
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "HTML",
+    }).encode("utf-8")
+
+    headers = {"Content-Type": "application/json"}
+    req = request.Request(url, data=payload, headers=headers, method="POST")
+
+    try:
+        with request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            if body.get("ok"):
+                msg_id = body.get("result", {}).get("message_id")
+                logger.info("Message sent successfully (msg_id=%s).", msg_id)
+                return True
+            else:
+                logger.error("Telegram API returned error: %s", body.get("description", "unknown"))
+                return False
+    except error.HTTPError as exc:
+        if exc.code in (401, 403):
+            logger.error(
+                "Authentication failed (HTTP %d). Check TELEGRAM_BOT_TOKEN or that the bot is in the target group.",
+                exc.code,
+            )
+        else:
+            logger.error("Telegram API HTTP error %d: %s", exc.code, exc.read().decode()[:200])
+        return False
+    except error.URLError as exc:
+        logger.error("Failed to send Telegram message (network error): %s", exc.reason)
+        return False
+    except Exception as exc:
+        logger.error("Unexpected error sending Telegram message: %s", exc)
+        return False
+
+
+def send_listing_notification(listing: dict) -> bool:
+    """Send a Telegram notification for a single listing.
+
+    Parameters
+    ----------
+    listing : dict
+        A listing dict with the same structure produced by scraper.py
+        (listing_id, url, address, price, living_area_m2, bedrooms, etc.).
+
+    Returns
+    -------
+    bool
+        True if the message was sent successfully, False otherwise.
+    """
+    token = _get_token()
+    chat_id = _get_chat_id()
+    message = _format_listing_message(listing)
+
+    logger.info("Sending notification for listing %s (%s)", listing.get("listing_id"), listing.get("address"))
+    return _send_message(token, chat_id, message)
+
+
+def send_notifications(listings: list[dict], delay: float = _MESSAGE_DELAY) -> list[bool]:
+    """Send a Telegram notification for each listing in the list.
+
+    Sends messages sequentially with a small delay between them to avoid
+    Telegram rate limits.
+
+    Parameters
+    ----------
+    listings : list[dict]
+        List of listing dicts (same structure as scraper.py output).
+    delay : float
+        Seconds to wait between messages (default 1.1s).
+
+    Returns
+    -------
+    list[bool]
+        One success/failure result per listing, in order.
+    """
+    if not listings:
+        logger.info("No listings to notify.")
+        return []
+
+    results = []
+    for i, listing in enumerate(listings):
+        success = send_listing_notification(listing)
+        results.append(success)
+
+        if i < len(listings) - 1 and delay > 0:
+            import time
+            time.sleep(delay)
+
+    sent = sum(1 for r in results if r)
+    failed = len(results) - sent
+    logger.info(
+        "Notification batch complete: %d sent, %d failed out of %d total.",
+        sent, failed, len(results),
+    )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point — test mode
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+
+    print()
+    print("=" * 60)
+    print("NOTIFIER TEST MODE")
+    print("=" * 60)
+    print()
+    print("WARNING: This will send a REAL message to the Telegram group")
+    print("configured in .env. Make sure this is intentional before proceeding.")
+    print()
+    print("Sample listing data:")
+    sample = {
+        "listing_id": "test-00000000",
+        "url": "https://www.funda.nl/koop/amsterdam/huis-test-straat/12345678/",
+        "address": "Teststraat 42, Amsterdam",
+        "neighborhood": "De Pijp",
+        "price": 650000,
+        "living_area_m2": 115,
+        "plot_size_m2": None,
+        "rooms": 4,
+        "bedrooms": 3,
+        "property_type": "huis",
+        "year_built": None,
+        "energy_label": None,
+        "status": None,
+    }
+    for k, v in sample.items():
+        print(f"  {k}: {v}")
+    print()
+
+    success = send_listing_notification(sample)
+
+    print()
+    if success:
+        print("SUCCESS: Test message was sent to the Telegram group.")
+    else:
+        print("FAILURE: Could not send the test message. Check logs above.")
+    print("=" * 60)
+    print()
