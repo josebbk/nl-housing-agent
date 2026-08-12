@@ -41,7 +41,7 @@ tmux is used to keep development and debugging sessions persistent.
 | Component            | Choice                                                                     | Why                                                                                                                 |
 | -------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | Language             | Python 3.12, in the project `.venv`                                        | Already provisioned; strong scraping ecosystem                                                                      |
-| Browser automation   | Playwright (Chromium)                                                      | Funda is JavaScript-rendered and browser automation is the current practical approach for interacting with the site |
+| Browser automation   | Playwright (Chromium, headless) + playwright-stealth                                                    | Funda is JavaScript-rendered and browser automation is the current practical approach for interacting with the site. playwright-stealth patches common headless-browser fingerprints; confirmed working against live Funda results (see Implementation Status). No virtual display (Xvfb) is required — native headless mode renders entirely in memory. |
 | Storage              | SQLite                                                                     | Single-machine project; no database server required                                                                 |
 | Notifications        | Telegram Bot API via direct HTTPS calls / suitable Python Telegram library | Bot + token already exist                                                                                           |
 | Scheduling           | cron (Phase 1)                                                             | Simple periodic execution without a persistent application process                                                  |
@@ -432,10 +432,11 @@ The following decisions remain open or require further testing:
 * **Status:** Resolved / Confirmed.
 * **Value:** €550,000–€750,000.
 
-### 2. Exact Playwright behavior
+### 2. Exact Playwright behavior — RESOLVED
 
-The project should determine through real-world testing whether standard
-Playwright behavior is sufficient for Funda.
+Original open question: the project should determine through real-world testing whether standard Playwright behavior is sufficient for Funda, and stealth plugins were not to be introduced without a demonstrated technical need and explicit approval.
+
+Resolution: standard headless Playwright alone was not sufficient for reliable access. playwright-stealth was introduced to address this, tested against live Funda search results (headless Chromium, 5-page cap per run), and explicitly approved by the project owner. This is now the confirmed approach — see Tech Stack and Implementation Status. Native headless mode was sufficient; no Xvfb/virtual display dependency was needed, so this has no impact on operations.md's cron setup.
 
 Do not introduce stealth plugins or other anti-detection tooling unless a
 specific technical need is demonstrated and the dependency is approved.
