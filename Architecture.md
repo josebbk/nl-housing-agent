@@ -169,17 +169,27 @@ data/funda.db
 | `url`            | TEXT              | Full Funda listing URL                            |
 | `address`        | TEXT              | Listing address                                   |
 | `neighborhood`   | TEXT              | Neighborhood where available                      |
-| `price`          | INTEGER           | Asking price in EUR                               |
-| `living_area_m2` | INTEGER           | Living area                                       |
-| `plot_size_m2`   | INTEGER           | Nullable                                          |
-| `rooms`          | INTEGER           | Number of rooms                                   |
-| `bedrooms`       | INTEGER           | Nullable                                          |
-| `property_type`  | TEXT              | Property type                                     |
-| `year_built`     | INTEGER           | Nullable                                          |
-| `energy_label`   | TEXT              | Nullable                                          |
-| `status`         | TEXT              | Available / under offer / sold / etc.             |
+| `price`          | INTEGER           | Asking price in EUR; NULL when unknown at card level |
+| `living_area_m2` | INTEGER           | Living area; NULL when unknown at card level         |
+| `plot_size_m2`   | INTEGER           | Nullable                                             |
+| `rooms`          | INTEGER           | Number of rooms; NULL (only available on detail pages) |
+| `bedrooms`       | INTEGER           | Nullable                                             |
+| `property_type`  | TEXT              | Property type; NULL when not derivable from the card |
+| `year_built`     | INTEGER           | Nullable                                             |
+| `energy_label`   | TEXT              | Nullable                                             |
+| `status`         | TEXT              | Available / under offer / sold / etc.; NULL at card level |
 | `first_seen_at`  | TEXT              | ISO 8601 timestamp                                |
 | `notified`       | INTEGER           | Boolean: 0/1                                      |
+
+### NULL handling (card-level scraping)
+
+The scraper produces some fields only from Funda detail pages. The storage
+schema therefore stores `price`, `living_area_m2`, `rooms`, `property_type`,
+`status` as nullable so card-level listings with unknown values are still
+stored (they are never silently dropped). SQL `NULL` never satisfies a
+comparison, so listings with NULL price / living area / bedrooms cannot match
+the Phase 1 filter and will not generate notifications, while remaining
+stored for deduplication and later analysis.
 
 ---
 
