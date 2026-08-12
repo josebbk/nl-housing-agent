@@ -135,7 +135,7 @@ The confirmed Phase 1 filtering criteria are:
 
 ### Resolution of Price Range Requirement
 
-The price range has been explicitly confirmed by the project owner as **€550,000–€750,000** for Phase 1. Any legacy references to `≤ €500,000` are superseded by this decision. This range serves as the active single source of truth across all project documentation.
+The price range has been explicitly confirmed by the project owner as **€550,000–€750,000** for Phase 1. This range serves as the active single source of truth across all project documentation.
 
 ---
 
