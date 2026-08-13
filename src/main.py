@@ -13,7 +13,7 @@ from .storage import (
     fetch_unnotified_matching_listings,
     mark_as_notified,
 )
-from .notifier import send_notifications
+from .notifier import send_notifications, send_failure_alert
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def main() -> None:
         "matching_listings": 0,
         "notifications_sent": 0,
         "notifications_failed": 0,
+        "skipped_listings": 0,
         "errors": [],
     }
 
@@ -97,8 +98,7 @@ def main() -> None:
     except Exception as exc:
         logger.error("Database initialisation failed: %s", exc)
         stats["errors"].append(f"DB init: {exc}")
-        _log_run_summary(run_start, stats)
-        sys.exit(1)
+        _send_failure_alert_and_exit(run_start, stats)
 
     # --- 2. Scrape ---
     try:
@@ -115,8 +115,7 @@ def main() -> None:
     except Exception as exc:
         logger.error("Scraping failed: %s", exc, exc_info=True)
         stats["errors"].append(f"Scrape: {exc}")
-        _log_run_summary(run_start, stats)
-        sys.exit(1)
+        _send_failure_alert_and_exit(run_start, stats)
 
     # A real Amsterdam search with these filters never legitimately returns zero
     # listings. A zero-result scrape usually means Funda served an anti-bot
@@ -129,8 +128,7 @@ def main() -> None:
             "Treating the run as failed."
         )
         stats["errors"].append("Scrape returned 0 listings (possible block)")
-        _log_run_summary(run_start, stats)
-        sys.exit(1)
+        _send_failure_alert_and_exit(run_start, stats)
 
     # --- 3. Insert new listings into DB ---
     for listing in listings:
@@ -138,6 +136,11 @@ def main() -> None:
             inserted = insert_listing(listing, db_path)
             if inserted:
                 stats["new_listings"] += 1
+            elif not listing.get("listing_id"):
+                # Already logged as error in storage.py
+                pass
+            else:
+                stats["skipped_listings"] += 1
         except Exception as exc:
             logger.error(
                 "Failed to insert listing %s: %s",
@@ -154,8 +157,7 @@ def main() -> None:
     except Exception as exc:
         logger.error("Failed to fetch matching listings: %s", exc, exc_info=True)
         stats["errors"].append(f"Fetch matching: {exc}")
-        _log_run_summary(run_start, stats)
-        sys.exit(1)
+        _send_failure_alert_and_exit(run_start, stats)
 
     # --- 5. Send notifications; mark each listing notified only on success ---
     if dry_run:
@@ -196,7 +198,32 @@ def main() -> None:
     # A run is failed when a notification could not be delivered; affected
     # listings remain unnotified so a later run retries them safely.
     if stats["notifications_failed"] > 0:
+        alert_msg = (
+            f"<b>⚠️ Funda scraper run failed:</b> "
+            f"{stats['notifications_failed']} notification(s) could not be delivered. "
+            f"Check logs/cron.log and logs/scraper.log."
+        )
+        try:
+            send_failure_alert(alert_msg)
+        except Exception as exc:
+            logger.error("Failed to send failure alert: %s", exc)
         sys.exit(1)
+
+
+def _send_failure_alert_and_exit(run_start: datetime, stats: dict) -> None:
+    """Send a Telegram failure alert, log the summary, then exit with code 1.
+
+    The alert send is wrapped in try/except so it never crashes the script.
+    """
+    reason = "; ".join(stats["errors"]) if stats["errors"] else "unknown"
+    alert_msg = f"<b>⚠️ Funda scraper run failed:</b> {reason}. Check logs/cron.log and logs/scraper.log."
+    try:
+        send_failure_alert(alert_msg)
+    except Exception as exc:
+        logger.error("Failed to send failure alert: %s", exc)
+
+    _log_run_summary(run_start, stats)
+    sys.exit(1)
 
 
 def _log_run_summary(run_start: datetime, stats: dict) -> None:
@@ -211,6 +238,7 @@ def _log_run_summary(run_start: datetime, stats: dict) -> None:
     logger.info("  Duration:       %.1fs", duration)
     logger.info("  Scraped:        %d", stats["listings_scraped"])
     logger.info("  New:            %d", stats["new_listings"])
+    logger.info("  Skipped:        %d", stats["skipped_listings"])
     logger.info("  Matching:       %d", stats["matching_listings"])
     logger.info("  Notified:       %d", stats["notifications_sent"])
     logger.info("  Notify failed:  %d", stats["notifications_failed"])

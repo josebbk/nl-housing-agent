@@ -55,13 +55,25 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
     Sets first_seen_at to the current ISO 8601 timestamp in local/UTC time.
     Sets notified to 0 by default.
     
-    Returns True if the listing was successfully inserted, False if it was ignored (already exists).
+    Returns True if the listing was successfully inserted, False if it was ignored
+    (already exists or missing required fields).
     """
     db_path = Path(db_path)
     listing_id = listing_data.get("listing_id")
     if not listing_id:
         logger.error("Cannot insert listing: 'listing_id' is missing from listing data.")
         raise ValueError("Missing 'listing_id' in listing_data")
+
+    # Validate required fields: url, address, neighborhood, price, living_area_m2, bedrooms
+    required_fields = ["url", "address", "neighborhood", "price", "living_area_m2", "bedrooms"]
+    missing = [f for f in required_fields if not listing_data.get(f)]
+    if missing:
+        url = listing_data.get("url", listing_id)
+        logger.info(
+            "Skipping listing %s (%s): missing required field(s): %s",
+            listing_id, url, ", ".join(missing),
+        )
+        return False
 
     # Clone data to avoid mutating original, and inject automatic fields
     data = listing_data.copy()
@@ -70,7 +82,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
         data["notified"] = 0
 
     # Ensure optional/nullable fields are None if missing
-    for opt_field in ["plot_size_m2", "bedrooms", "year_built", "energy_label"]:
+    for opt_field in ["rooms", "plot_size_m2", "property_type", "year_built", "energy_label", "status"]:
         if opt_field not in data:
             data[opt_field] = None
 

@@ -425,6 +425,26 @@ it safely. The run is also treated as failed when the scrape returns 0 listings
 so a Funda anti-bot interstitial is not silently reported as an empty
 successful run.
 
+### Failure alerts
+
+When a run exits with code 1, the script sends a Telegram failure alert to a
+dedicated topic (configured via `TELEGRAM_FAILURE_TOPIC_ID` in `.env`). The
+alert contains a short reason derived from the recorded errors, e.g.:
+
+```
+⚠️ Funda scraper run failed: Scrape: Connection reset by peer. Check logs/cron.log and logs/scraper.log.
+```
+
+The alert is sent **after** the run summary is logged, so the logs contain
+full diagnostic information.
+
+The alert send is wrapped in try/except — if Telegram is unreachable or the
+alert fails for any reason, the script still exits with code 1 as expected.
+A failed alert send is logged but never raises.
+
+Skipped listings (missing required fields) are logged at INFO level and counted
+in the run summary under "Skipped". They do **not** trigger a failure alert.
+
 ---
 
 ## 13. Telegram Testing

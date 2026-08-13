@@ -139,6 +139,66 @@ def _send_message(token: str, chat_id: str, message: str) -> bool:
         return False
 
 
+def _get_failure_topic_id() -> str:
+    """Return the Telegram failure-alert topic ID from environment."""
+    _load_env()
+    topic_id = os.environ.get("TELEGRAM_FAILURE_TOPIC_ID", "")
+    if not topic_id:
+        logger.warning("TELEGRAM_FAILURE_TOPIC_ID is not set; failure alerts will not include a thread_id.")
+    return topic_id
+
+
+def send_failure_alert(message: str) -> bool:
+    """Send a plain-text failure alert to a dedicated Telegram topic.
+
+    Uses TELEGRAM_FAILURE_TOPIC_ID as message_thread_id so the message
+    lands in the failure-alerts topic instead of General.
+
+    This function is intentionally lightweight and never raises — any
+    internal failure is logged and False is returned.
+
+    Parameters
+    ----------
+    message : str
+        Plain-text alert message (no HTML formatting).
+
+    Returns
+    -------
+    bool
+        True if the message was sent successfully, False otherwise.
+    """
+    try:
+        token = _get_token()
+        chat_id = _get_chat_id()
+        topic_id = _get_failure_topic_id()
+
+        payload_data = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+        }
+        if topic_id:
+            payload_data["message_thread_id"] = topic_id
+
+        url = f"{_TELEGRAM_API_BASE}{_SEND_MSG_PATH.format(token=token)}"
+        payload = json.dumps(payload_data).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        req = request.Request(url, data=payload, headers=headers, method="POST")
+
+        with request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            if body.get("ok"):
+                msg_id = body.get("result", {}).get("message_id")
+                logger.info("Failure alert sent successfully (msg_id=%s).", msg_id)
+                return True
+            else:
+                logger.error("Telegram API returned error sending failure alert: %s", body.get("description", "unknown"))
+                return False
+    except Exception as exc:
+        logger.error("Failed to send failure alert: %s", exc)
+        return False
+
+
 def send_listing_notification(listing: dict) -> bool:
     """Send a Telegram notification for a single listing.
 

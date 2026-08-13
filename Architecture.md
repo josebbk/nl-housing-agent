@@ -166,14 +166,14 @@ data/funda.db
 | Column           | Type              | Notes                                             |
 | ---------------- | ----------------- | ------------------------------------------------- |
 | `listing_id`     | TEXT, PRIMARY KEY | Derived from Funda listing URL; deduplication key |
-| `url`            | TEXT              | Full Funda listing URL                            |
-| `address`        | TEXT              | Listing address                                   |
-| `neighborhood`   | TEXT              | Neighborhood where available                      |
-| `price`          | INTEGER           | Asking price in EUR; NULL when unknown at card level |
-| `living_area_m2` | INTEGER           | Living area; NULL when unknown at card level         |
+| `url`            | TEXT NOT NULL     | Full Funda listing URL                            |
+| `address`        | TEXT NOT NULL     | Listing address                                   |
+| `neighborhood`   | TEXT NOT NULL     | Neighborhood where available                      |
+| `price`          | INTEGER NOT NULL  | Asking price in EUR                               |
+| `living_area_m2` | INTEGER NOT NULL  | Living area in m²                                 |
+| `bedrooms`       | INTEGER NOT NULL  | Number of bedrooms                                |
 | `plot_size_m2`   | INTEGER           | Nullable                                             |
 | `rooms`          | INTEGER           | Number of rooms; NULL (only available on detail pages) |
-| `bedrooms`       | INTEGER           | Nullable                                             |
 | `property_type`  | TEXT              | Property type; NULL when not derivable from the card |
 | `year_built`     | INTEGER           | Nullable                                             |
 | `energy_label`   | TEXT              | Nullable                                             |
@@ -181,15 +181,19 @@ data/funda.db
 | `first_seen_at`  | TEXT              | ISO 8601 timestamp                                |
 | `notified`       | INTEGER           | Boolean: 0/1                                      |
 
-### NULL handling (card-level scraping)
+### Required fields enforcement (supersedes earlier "bedrooms nullable" decision)
 
-The scraper produces some fields only from Funda detail pages. The storage
-schema therefore stores `price`, `living_area_m2`, `rooms`, `property_type`,
-`status` as nullable so card-level listings with unknown values are still
-stored (they are never silently dropped). SQL `NULL` never satisfies a
-comparison, so listings with NULL price / living area / bedrooms cannot match
-the Phase 1 filter and will not generate notifications, while remaining
-stored for deduplication and later analysis.
+The six fields `url`, `address`, `neighborhood`, `price`, `living_area_m2`, and
+`bedrooms` are **required** — listings missing any of these are skipped and
+logged at INFO level, not inserted into the database.
+
+This supersedes the earlier decision in this document that marked `bedrooms` as
+nullable. These six fields are the basis of Phase 1 filtering; allowing them to
+be NULL would let incomplete listings into the database where they could not
+match filters but would still occupy space and complicate future analysis.
+
+The remaining fields (`plot_size_m2`, `rooms`, `year_built`, `energy_label`,
+`status`) stay nullable — they are supplementary and do not affect filtering.
 
 ---
 
