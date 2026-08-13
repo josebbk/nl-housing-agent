@@ -4,39 +4,31 @@ import argparse
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .scraper import scrape_funda
-from .storage import init_db, insert_listing, fetch_unnotified_matching_listings
+from .storage import (
+    init_db,
+    insert_listing,
+    fetch_unnotified_matching_listings,
+    mark_as_notified,
+)
 from .notifier import send_notifications
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "data/funda.db"
+# Default database path, anchored to the project root so it does not depend on
+# the process working directory.
+DB_PATH = Path(__file__).resolve().parent.parent / "data" / "funda.db"
 
-# Phase 1 filter defaults passed to the scraper URL builder.
-# The scraper already applies these at the URL level; main.py also
-# enforces them as a safety check after storage so the contract is
-# explicit at the orchestration layer.
+# Phase 1 filter values. These configure the Funda search URL built by
+# scraper.py. The authoritative filter evaluation lives in storage.py's
+# fetch_unnotified_matching_listings(); there is no second filter
+# implementation here.
 PRICE_MIN = 550_000
 PRICE_MAX = 750_000
 BEDROOMS_MIN = 3
 LIVING_AREA_MIN = 100
-
-
-def matches_phase1_filters(listing: dict) -> bool:
-    """Return True if a listing meets all Phase 1 criteria."""
-    price = listing.get("price")
-    bedrooms = listing.get("bedrooms")
-    living_area = listing.get("living_area_m2")
-
-    if price is None or bedrooms is None or living_area is None:
-        return False
-
-    return (
-        PRICE_MIN <= price <= PRICE_MAX
-        and bedrooms >= BEDROOMS_MIN
-        and living_area >= LIVING_AREA_MIN
-    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,32 +38,39 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run scraping/filtering/DB writes but skip sending Telegram messages",
     )
+    parser.add_argument(
+        "--db-path",
+        default=str(DB_PATH),
+        help="Path to the SQLite database (default: %(default)s)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     dry_run = args.dry_run
+    db_path = args.db_path
 
     # --- Run metadata ---
     run_start = datetime.now(timezone.utc)
     start_iso = run_start.isoformat()
     stats = {
-        "pages_processed": 0,
         "listings_scraped": 0,
         "new_listings": 0,
         "matching_listings": 0,
         "notifications_sent": 0,
+        "notifications_failed": 0,
         "errors": [],
     }
 
     logger.info("=" * 60)
     logger.info("Run started at %s", start_iso)
     logger.info("Dry-run mode: %s", dry_run)
+    logger.info("Database: %s", db_path)
 
     # --- 1. Initialise database ---
     try:
-        init_db(DB_PATH)
+        init_db(db_path)
     except Exception as exc:
         logger.error("Database initialisation failed: %s", exc)
         stats["errors"].append(f"DB init: {exc}")
@@ -96,10 +95,24 @@ def main() -> None:
         _log_run_summary(run_start, stats)
         sys.exit(1)
 
+    # A real Amsterdam search with these filters never legitimately returns zero
+    # listings. A zero-result scrape usually means Funda served an anti-bot
+    # interstitial (Akamai/reCAPTCHA) or the page structure changed, so fail the
+    # run loudly instead of reporting a successful empty run.
+    if not listings:
+        logger.error(
+            "Scrape returned 0 listings. This may indicate an Akamai/Funda "
+            "block, a reCAPTCHA challenge, or a page-structure change. "
+            "Treating the run as failed."
+        )
+        stats["errors"].append("Scrape returned 0 listings (possible block)")
+        _log_run_summary(run_start, stats)
+        sys.exit(1)
+
     # --- 3. Insert new listings into DB ---
     for listing in listings:
         try:
-            inserted = insert_listing(listing, DB_PATH)
+            inserted = insert_listing(listing, db_path)
             if inserted:
                 stats["new_listings"] += 1
         except Exception as exc:
@@ -109,33 +122,58 @@ def main() -> None:
                 exc,
                 exc_info=True,
             )
-            stats["errors"].append(
-                f"Insert {listing.get('listing_id', '?')}: {exc}"
-            )
+            stats["errors"].append(f"Insert {listing.get('listing_id', '?')}: {exc}")
 
-    # --- 4. Fetch unnotified matching listings (Phase 1 filters + not notified) ---
+    # --- 4. Fetch unnotified matching listings (filters applied in storage) ---
     try:
-        matching = fetch_unnotified_matching_listings(DB_PATH)
+        matching = fetch_unnotified_matching_listings(db_path)
         stats["matching_listings"] = len(matching)
     except Exception as exc:
         logger.error("Failed to fetch matching listings: %s", exc, exc_info=True)
         stats["errors"].append(f"Fetch matching: {exc}")
-        matching = []
+        _log_run_summary(run_start, stats)
+        sys.exit(1)
 
-    # --- 5. Send notifications (post-scrape, not interleaved) ---
+    # --- 5. Send notifications; mark each listing notified only on success ---
     if dry_run:
         logger.info("Dry-run: skipping %d notification(s)", len(matching))
-        stats["notifications_sent"] = 0
     else:
         try:
             results = send_notifications(matching)
-            stats["notifications_sent"] = sum(1 for r in results if r)
         except Exception as exc:
             logger.error("Notification batch failed: %s", exc, exc_info=True)
             stats["errors"].append(f"Notifications: {exc}")
+            results = [False] * len(matching)
+
+        for listing, success in zip(matching, results):
+            listing_id = listing.get("listing_id", "?")
+            if success:
+                try:
+                    mark_as_notified(listing_id, db_path)
+                    stats["notifications_sent"] += 1
+                except Exception as exc:
+                    logger.error(
+                        "Notification sent but failed to mark %s as notified: %s",
+                        listing_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    stats["errors"].append(f"Mark {listing_id}: {exc}")
+            else:
+                stats["notifications_failed"] += 1
+                logger.error(
+                    "Notification failed for listing %s; it stays unnotified "
+                    "and will be retried on a later run.",
+                    listing_id,
+                )
 
     # --- 6. Summary ---
     _log_run_summary(run_start, stats)
+
+    # A run is failed when a notification could not be delivered; affected
+    # listings remain unnotified so a later run retries them safely.
+    if stats["notifications_failed"] > 0:
+        sys.exit(1)
 
 
 def _log_run_summary(run_start: datetime, stats: dict) -> None:
@@ -145,17 +183,17 @@ def _log_run_summary(run_start: datetime, stats: dict) -> None:
 
     logger.info("-" * 40)
     logger.info("Run summary:")
-    logger.info("  Start:      %s", run_start.isoformat())
-    logger.info("  End:        %s", run_end.isoformat())
-    logger.info("  Duration:   %.1fs", duration)
-    logger.info("  Pages:      %d", stats["pages_processed"])
-    logger.info("  Scraped:    %d", stats["listings_scraped"])
-    logger.info("  New:        %d", stats["new_listings"])
-    logger.info("  Matching:   %d", stats["matching_listings"])
-    logger.info("  Notified:   %d", stats["notifications_sent"])
+    logger.info("  Start:          %s", run_start.isoformat())
+    logger.info("  End:            %s", run_end.isoformat())
+    logger.info("  Duration:       %.1fs", duration)
+    logger.info("  Scraped:        %d", stats["listings_scraped"])
+    logger.info("  New:            %d", stats["new_listings"])
+    logger.info("  Matching:       %d", stats["matching_listings"])
+    logger.info("  Notified:       %d", stats["notifications_sent"])
+    logger.info("  Notify failed:  %d", stats["notifications_failed"])
     if stats["errors"]:
         for err in stats["errors"]:
-            logger.warning("  Error:      %s", err)
+            logger.warning("  Error:          %s", err)
     logger.info("-" * 40)
     logger.info("Run completed")
 
