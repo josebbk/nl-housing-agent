@@ -21,6 +21,8 @@ Pagination: append &page=N to the URL (1-indexed).
 import logging
 import random
 import re
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, asdict
 from typing import Optional
 
@@ -91,6 +93,41 @@ def build_search_url(
     params.append(f"page={page}")
 
     return f"{base}?{'&'.join(params)}"
+
+
+# ---------------------------------------------------------------------------
+# HTTP fetching — bypasses Akamai bot-detection on datacenter IPs
+# ---------------------------------------------------------------------------
+
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/139.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "nl-NL,nl;q=0.9,en;q=0.8",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+def _fetch_page_html(url: str, timeout: int = 30) -> str:
+    """Fetch a Funda page using urllib with realistic browser headers.
+
+    Funda's Akamai bot-protection blocks direct Playwright navigation from
+    datacenter IPs.  Fetching the raw HTML with a standard HTTP client first,
+    then loading it into the browser for JS rendering, bypasses this check.
+    """
+    req = urllib.request.Request(url, headers=_BROWSER_HEADERS)
+    response = urllib.request.urlopen(req, timeout=timeout)
+    return response.read().decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -255,18 +292,11 @@ def scrape_funda(
                 user_agent=(
                     "Mozilla/5.0 (X11; Linux x86_64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/128.0.0.0 Safari/537.36"
+                    "Chrome/139.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1920, "height": 1080},
                 timezone_id="Europe/Amsterdam",
             )
-
-            # Mask webdriver to reduce bot-detection signals
-            context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                window.chrome = { runtime: {} };
-            """)
 
             page = context.new_page()
 
@@ -281,15 +311,21 @@ def scrape_funda(
                     page=page_num,
                 )
 
-                logger.info("Scraping page %d: %s", page_num, url)
+                logger.info("Fetching page %d: %s", page_num, url)
 
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    html = _fetch_page_html(url, timeout=30)
                 except Exception as exc:
-                    logger.error("Navigation failed on page %d: %s", page_num, exc)
+                    logger.error("HTTP fetch failed on page %d: %s", page_num, exc)
                     break
 
-                # Wait for JS to render
+                # Load the fetched HTML into the browser for JS rendering.
+                # This bypasses Akamai bot-protection that blocks direct
+                # Playwright navigation from datacenter IPs.
+                data_url = "data:text/html," + urllib.parse.quote(html)
+                page.goto(data_url, wait_until="domcontentloaded", timeout=30000)
+
+                # Wait for JS to render the listing cards
                 page.wait_for_timeout(random.uniform(3000, 5000))
 
                 # Handle cookie consent banner if present
@@ -396,10 +432,20 @@ def _dismiss_cookie_banner(page: Page) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import argparse
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+
+    parser = argparse.ArgumentParser(description="Funda.nl scraper (standalone)")
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run browser in headed mode (for local debugging; requires display)",
+    )
+    args = parser.parse_args()
 
     listings = scrape_funda(
         area="amsterdam",
@@ -409,7 +455,7 @@ if __name__ == "__main__":
         floor_area_min=100,
         bedrooms_min=3,
         max_pages=5,
-        headless=False,
+        headless=not args.headed,
     )
 
     print(f"\n{'='*60}")

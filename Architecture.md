@@ -41,7 +41,7 @@ tmux is used to keep development and debugging sessions persistent.
 | Component            | Choice                                                                     | Why                                                                                                                 |
 | -------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | Language             | Python 3.12, in the project `.venv`                                        | Already provisioned; strong scraping ecosystem                                                                      |
-| Browser automation   | Playwright (Chromium, headless) + playwright-stealth                                                    | Funda is JavaScript-rendered and browser automation is the current practical approach for interacting with the site. playwright-stealth patches common headless-browser fingerprints; confirmed working against live Funda results (see Implementation Status). No virtual display (Xvfb) is required — native headless mode renders entirely in memory. |
+| Browser automation   | Playwright (Chromium, headless) + urllib-based HTML fetch               | Funda is JavaScript-rendered and uses Akamai bot-protection that blocks direct Playwright navigation from datacenter IPs. The scraper fetches page HTML with `urllib` using realistic browser headers, then loads it into Playwright via a `data:` URL for JavaScript rendering. `playwright-stealth` was tried but did not bypass Akamai. No virtual display (Xvfb) is required — native headless mode renders entirely in memory. |
 | Storage              | SQLite                                                                     | Single-machine project; no database server required                                                                 |
 | Notifications        | Telegram Bot API via direct HTTPS calls / suitable Python Telegram library | Bot + token already exist                                                                                           |
 | Scheduling           | cron (Phase 1)                                                             | Simple periodic execution without a persistent application process                                                  |
@@ -432,11 +432,11 @@ The following decisions remain open or require further testing:
 * **Status:** Resolved / Confirmed.
 * **Value:** €550,000–€750,000.
 
-### 2. Exact Playwright behavior — RESOLVED
+### 2. Exact Playwright behavior — RESOLVED (updated 2026-08-13)
 
 Original open question: the project should determine through real-world testing whether standard Playwright behavior is sufficient for Funda, and stealth plugins were not to be introduced without a demonstrated technical need and explicit approval.
 
-Resolution: standard headless Playwright alone was not sufficient for reliable access. playwright-stealth was introduced to address this, tested against live Funda search results (headless Chromium, 5-page cap per run), and explicitly approved by the project owner. This is now the confirmed approach — see Tech Stack and Implementation Status. Native headless mode was sufficient; no Xvfb/virtual display dependency was needed, so this has no impact on operations.md's cron setup.
+Resolution: standard headless Playwright alone was not sufficient — Akamai bot-protection blocks direct Playwright navigation from datacenter IPs. `playwright-stealth` was tested but also failed to bypass Akamai. The working approach is a two-step process: (1) fetch page HTML with `urllib` using realistic browser headers (`Sec-Fetch-*`, `Accept-Language`, etc.), then (2) load the HTML into Playwright via a `data:` URL for JavaScript rendering. This bypasses Akamai because the HTTP request comes from `urllib` (not Playwright's Chromium). See `docs/site-notes/funda.md` for details.
 
 Do not introduce stealth plugins or other anti-detection tooling unless a
 specific technical need is demonstrated and the dependency is approved.
