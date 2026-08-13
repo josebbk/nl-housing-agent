@@ -184,6 +184,26 @@ system knows it has already been seen.
 The same listing should not generate repeated "new listing" notifications on
 every scheduled run.
 
+### Re-notification on price or status change
+
+When a scraped listing already exists in the database, the system compares
+the new scraped values against the stored row.
+
+* **Price changed** (increase or decrease): the listing is updated,
+  `notified` is reset to 0, and the listing re-enters the matching and
+  notification flow on this run. If it matches the Phase 1 filters, a
+  Telegram notification is sent.
+* **Status changed** (e.g. from "beschikbaar" to "verkocht" or vice versa):
+  the listing is updated, `notified` is reset to 0, and the listing
+  re-enters the matching and notification flow on this run.
+* **Neither price nor status changed**: the listing's other fields are
+  updated in the database, but `notified` is left untouched. No
+  re-notification is triggered.
+
+This ensures the owner is alerted when a previously-seen listing becomes
+relevant (price drop into range, or status change to available) without
+generating duplicate notifications for unchanged listings.
+
 ---
 
 ## 10. Scheduling

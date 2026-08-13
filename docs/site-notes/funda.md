@@ -9,6 +9,37 @@ be known.
 
 (newest entries at the top)
 
+### 2026-08-13 — Near-total field-extraction failure on listing cards
+
+- **Symptom:** The scraper was discarding ~75 of 76 listings because price,
+  bedrooms, and living_area_m2 could not be extracted. The `_extract_page_listings`
+  function was reading `parent?.innerText` where `parent` was the image link's
+  direct parent (`relative overflow-hidden rounded-md`), which on the current
+  Funda page only contains badge text like "Nieuw" — not the listing details.
+
+- **Diagnosis:** Funda's card structure has two links per listing: an image link
+  and a details link. The image link's direct parent is a small card wrapper
+  containing only the badge. The actual listing data (address, price, living
+  area, rooms, energy label) lives in a sibling `flexRow` container
+  (`@lg:flex-row`) that wraps the card. The `innerText` of this flexRow
+  contains all fields. The previous regex-based extraction on the wrong text
+  source could never find price, bedrooms, or living area.
+
+- **Fix:** Rewrote `_extract_page_listings` to walk up from each image link to
+  find the `@lg:flex-row` parent container and extract its full `innerText`.
+  Rewrote `_extract_listing_data` to parse fields from this complete text:
+  price from `€` pattern, living/plot area from `m²` pattern, rooms/bedrooms/
+  energy label from the tail after the last area value, address from the first
+  non-badge line. URL-based fields (listing_id, neighborhood, property_type)
+  are extracted from the href.
+
+- **Pattern/Warning:** Funda's card DOM structure changed — the details moved
+  out of the image-link's direct parent. If listing extraction starts failing
+  again, check whether the card structure still places data in the `@lg:flex-row`
+  parent. The `truncate` CSS class is used for address, postcode+city, price,
+  and the area/rooms/energy block — these are stable anchors if text parsing
+  becomes unreliable.
+
 ### 2026-08-13 — Akamai bot-protection blocks all headless browser navigation
 
 - **Symptom:** `python -m src.scraper` navigated to Funda successfully (no

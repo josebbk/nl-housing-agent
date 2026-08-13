@@ -184,13 +184,19 @@ data/funda.db
 ### Required fields enforcement (supersedes earlier "bedrooms nullable" decision)
 
 The six fields `url`, `address`, `neighborhood`, `price`, `living_area_m2`, and
-`bedrooms` are **required** — listings missing any of these are skipped and
-logged at INFO level, not inserted into the database.
+`bedrooms` are **required** — listings missing any of these are discarded and
+the entire scraper run is treated as failed (exit code 1, Telegram failure
+alert sent), same as the "0 listings / possible block" case.
 
 This supersedes the earlier decision in this document that marked `bedrooms` as
-nullable. These six fields are the basis of Phase 1 filtering; allowing them to
-be NULL would let incomplete listings into the database where they could not
-match filters but would still occupy space and complicate future analysis.
+nullable and that missing required fields should be silently logged and skipped.
+The prior "discard silently, just log" behavior was replaced because these six
+fields are the basis of Phase 1 filtering; if they cannot be extracted it means
+the scraper's extraction logic is broken (e.g. stale selectors or Funda HTML
+changes), and silently discarding listings hides this failure from the operator.
+A run that silently discards listings gives a false sense of health. The new
+behavior ensures that extraction failures are surfaced immediately via the
+existing cron failure-alert Telegram mechanism.
 
 The remaining fields (`plot_size_m2`, `rooms`, `year_built`, `energy_label`,
 `status`) stay nullable — they are supplementary and do not affect filtering.
@@ -205,21 +211,34 @@ The intended logic is conceptually:
 
 ```text
 listing encountered
-      ↓
+       ↓
 listing_id already exists?
-      ├── yes → not a new listing
-      │
-      └── no → insert
-                  ↓
-            evaluate filters
-                  ↓
-             if matching
-                  ↓
-          queue notification
+       ├── no → insert as new listing
+       │           ↓
+       │     evaluate filters
+       │           ↓
+       │      if matching
+       │           ↓
+       │      queue notification
+       │
+       └── yes → compare price and status
+                   ↓
+              price or status changed?
+                   ├── yes → update all fields,
+                   │         reset notified=0,
+                   │         re-enter filter/notification flow
+                   │
+                   └── no → update other fields only,
+                             leave notified untouched
 ```
 
 The database should not generate duplicate new-listing notifications merely
 because a listing appears in multiple scheduled runs.
+
+The `insert_listing` function in `storage.py` returns a status per listing:
+`"inserted"`, `"updated_renotify"`, `"updated_unchanged"`, or `"unchanged"`.
+`main.py` uses these to track distinct counts of new, updated, and
+re-notified listings in the run summary.
 
 ---
 
@@ -302,6 +321,22 @@ Notifications should be sent after the scraping phase has completed.
 
 This separation keeps the scraper and notification logic easier to test and
 debug independently.
+
+#### Re-notification on price or status change
+
+When `insert_listing` encounters an existing listing, it compares the new
+scraped price and status against the stored values:
+
+* If **price or status changed**: the listing row is updated, `notified` is
+  reset to 0, and the listing re-enters the filter/notification flow on the
+  current run. If it matches the Phase 1 criteria, a new notification is
+  sent.
+* If **neither price nor status changed**: other fields are updated but
+  `notified` is left as-is. No re-notification is triggered.
+
+This means the system can alert the owner about a previously-seen listing
+that becomes relevant (e.g. a price drop into the target range) without
+generating duplicate notifications for unchanged listings.
 
 ---
 

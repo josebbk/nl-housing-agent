@@ -80,10 +80,13 @@ def main() -> None:
     stats = {
         "listings_scraped": 0,
         "new_listings": 0,
+        "updated_listings": 0,
+        "re_notified_listings": 0,
         "matching_listings": 0,
         "notifications_sent": 0,
         "notifications_failed": 0,
         "skipped_listings": 0,
+        "required_field_failures": 0,
         "errors": [],
     }
 
@@ -133,12 +136,25 @@ def main() -> None:
     # --- 3. Insert new listings into DB ---
     for listing in listings:
         try:
-            inserted = insert_listing(listing, db_path)
-            if inserted:
+            result = insert_listing(listing, db_path)
+            if result == "inserted":
                 stats["new_listings"] += 1
-            elif not listing.get("listing_id"):
-                # Already logged as error in storage.py
-                pass
+            elif result == "updated_renotify":
+                stats["re_notified_listings"] += 1
+                stats["updated_listings"] += 1
+            elif result == "updated_unchanged":
+                stats["updated_listings"] += 1
+            elif result == "unchanged":
+                # Could be missing required fields or truly identical
+                if not listing.get("listing_id"):
+                    # Already logged as error in storage.py
+                    pass
+                elif not listing.get("url") or not listing.get("address") or \
+                     not listing.get("neighborhood") or not listing.get("price") or \
+                     not listing.get("living_area_m2") or not listing.get("bedrooms"):
+                    stats["required_field_failures"] += 1
+                else:
+                    stats["skipped_listings"] += 1
             else:
                 stats["skipped_listings"] += 1
         except Exception as exc:
@@ -149,6 +165,19 @@ def main() -> None:
                 exc_info=True,
             )
             stats["errors"].append(f"Insert {listing.get('listing_id', '?')}: {exc}")
+
+    # Required-field failures mean the scraper broke (extraction is unreliable)
+    # Treat the run as failed so the cron failure-alert mechanism triggers.
+    if stats["required_field_failures"] > 0:
+        logger.error(
+            "%d listing(s) discarded due to missing required fields. "
+            "The scraper extraction is likely broken — treating run as failed.",
+            stats["required_field_failures"],
+        )
+        stats["errors"].append(
+            f"{stats['required_field_failures']} required-field extraction failures"
+        )
+        _send_failure_alert_and_exit(run_start, stats)
 
     # --- 4. Fetch unnotified matching listings (filters applied in storage) ---
     try:
@@ -238,6 +267,8 @@ def _log_run_summary(run_start: datetime, stats: dict) -> None:
     logger.info("  Duration:       %.1fs", duration)
     logger.info("  Scraped:        %d", stats["listings_scraped"])
     logger.info("  New:            %d", stats["new_listings"])
+    logger.info("  Updated:        %d", stats["updated_listings"])
+    logger.info("  Re-notified:    %d", stats["re_notified_listings"])
     logger.info("  Skipped:        %d", stats["skipped_listings"])
     logger.info("  Matching:       %d", stats["matching_listings"])
     logger.info("  Notified:       %d", stats["notifications_sent"])

@@ -47,16 +47,23 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
         logger.exception("Failed to initialize database at %s: %s", db_path, e)
         raise
 
-def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) -> bool:
+def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) -> str:
     """
-    Inserts a new listing into the database.
-    
-    If the listing already exists (based on listing_id), it will be ignored (not updated).
-    Sets first_seen_at to the current ISO 8601 timestamp in local/UTC time.
-    Sets notified to 0 by default.
-    
-    Returns True if the listing was successfully inserted, False if it was ignored
-    (already exists or missing required fields).
+    Inserts a new listing or updates an existing one.
+
+    If the listing already exists (based on listing_id), compares the new
+    scraped values against the stored row.  If price or status differs from
+    what is stored, updates all fields and resets notified to 0 (re-enters
+    the matching/notification flow on this run).  If neither price nor status
+    changed, updates the other fields but leaves notified untouched.
+
+    first_seen_at and listing_id are never modified on update.
+
+    Returns one of:
+      "inserted"            — new listing, written for the first time
+      "updated_renotify"    — price or status changed; notified reset to 0
+      "updated_unchanged"   — other fields changed; notified left as-is
+      "unchanged"           — row identical to what was already stored
     """
     db_path = Path(db_path)
     listing_id = listing_data.get("listing_id")
@@ -73,11 +80,10 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
             "Skipping listing %s (%s): missing required field(s): %s",
             listing_id, url, ", ".join(missing),
         )
-        return False
+        return "unchanged"  # caller will treat missing required fields as a run-level failure
 
     # Clone data to avoid mutating original, and inject automatic fields
     data = listing_data.copy()
-    data["first_seen_at"] = datetime.now().isoformat()
     if "notified" not in data:
         data["notified"] = 0
 
@@ -86,31 +92,101 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
         if opt_field not in data:
             data[opt_field] = None
 
-    query = """
-        INSERT OR IGNORE INTO listings (
-            listing_id, url, address, neighborhood, price, living_area_m2,
-            plot_size_m2, rooms, bedrooms, property_type, year_built,
-            energy_label, status, first_seen_at, notified
-        ) VALUES (
-            :listing_id, :url, :address, :neighborhood, :price, :living_area_m2,
-            :plot_size_m2, :rooms, :bedrooms, :property_type, :year_built,
-            :energy_label, :status, :first_seen_at, :notified
-        );
-    """
-    
     try:
         with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
             with conn:
                 cursor = conn.cursor()
-                cursor.execute(query, data)
-                inserted = cursor.rowcount > 0
-                if inserted:
-                    logger.info("Successfully inserted new listing: %s (%s)", listing_id, data.get("address"))
+
+                # Check if listing exists
+                cursor.execute(
+                    "SELECT * FROM listings WHERE listing_id = ?;",
+                    (listing_id,),
+                )
+                existing = cursor.fetchone()
+
+                if existing is None:
+                    # --- New listing: INSERT ---
+                    data["first_seen_at"] = datetime.now().isoformat()
+                    query = """
+                        INSERT INTO listings (
+                            listing_id, url, address, neighborhood, price, living_area_m2,
+                            plot_size_m2, rooms, bedrooms, property_type, year_built,
+                            energy_label, status, first_seen_at, notified
+                        ) VALUES (
+                            :listing_id, :url, :address, :neighborhood, :price, :living_area_m2,
+                            :plot_size_m2, :rooms, :bedrooms, :property_type, :year_built,
+                            :energy_label, :status, :first_seen_at, :notified
+                        );
+                    """
+                    cursor.execute(query, data)
+                    logger.info(
+                        "Successfully inserted new listing: %s (%s)",
+                        listing_id, data.get("address"),
+                    )
+                    return "inserted"
+
+                # --- Existing listing: compare and possibly update ---
+                existing_price = existing["price"]
+                existing_status = existing["status"]
+                new_price = data.get("price")
+                new_status = data.get("status")
+
+                price_changed = existing_price != new_price
+                status_changed = existing_status != new_status
+                needs_renotify = price_changed or status_changed
+
+                # Build an UPDATE query with all updatable fields
+                # (never touch listing_id or first_seen_at)
+                updatable = [
+                    "url", "address", "neighborhood", "price", "living_area_m2",
+                    "plot_size_m2", "rooms", "bedrooms", "property_type",
+                    "year_built", "energy_label", "status", "notified",
+                ]
+                set_clause = ", ".join(f"{col} = :{col}" for col in updatable)
+                if needs_renotify:
+                    data["notified"] = 0
+
+                update_data = {col: data.get(col) for col in updatable}
+
+                cursor.execute(
+                    f"UPDATE listings SET {set_clause} WHERE listing_id = :listing_id;",
+                    {**update_data, "listing_id": listing_id},
+                )
+
+                if cursor.rowcount == 0:
+                    return "unchanged"
+
+                # Check if any values actually changed
+                all_unchanged = True
+                for col in updatable:
+                    if col == "notified" and needs_renotify:
+                        continue  # notified was forcibly reset
+                    if existing[col] != data.get(col):
+                        all_unchanged = False
+                        break
+
+                if all_unchanged:
+                    return "unchanged"
+
+                if needs_renotify:
+                    logger.info(
+                        "Updated listing %s (%s): price/status changed, resetting notified.",
+                        listing_id, data.get("address"),
+                    )
+                    return "updated_renotify"
                 else:
-                    logger.debug("Listing %s already exists, ignored insert.", listing_id)
-                return inserted
+                    logger.debug(
+                        "Updated listing %s (%s): other fields changed.",
+                        listing_id, data.get("address"),
+                    )
+                    return "updated_unchanged"
+
     except sqlite3.Error as e:
-        logger.exception("Failed to insert listing %s at %s: %s", listing_id, db_path, e)
+        logger.exception(
+            "Failed to insert/update listing %s at %s: %s",
+            listing_id, db_path, e,
+        )
         raise
 
 def listing_exists(listing_id: str, db_path: Path | str = DEFAULT_DB_PATH) -> bool:

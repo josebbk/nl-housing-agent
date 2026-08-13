@@ -156,67 +156,108 @@ def parse_price(text: str) -> tuple[Optional[int], str]:
 # ---------------------------------------------------------------------------
 
 def _extract_listing_data(text: str, href: str) -> Optional[dict]:
-    """Parse a Funda listing card's text + href into a dict.
+    """Parse a Funda listing card's full text + href into a dict.
+
+    The text comes from the card's flexRow container and contains all
+    visible fields: address, postcode+city, price, living area, plot area,
+    rooms, and energy label.
 
     Returns None if the text is too short or unparseable.
     """
     if not text or len(text) < 10:
         return None
 
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-    if not lines:
+    # --- URL-based fields (always reliable) ---
+    # Listing ID: /detail/koop/.../{id}/
+    id_m = re.search(r"/(\d+)/$", href)
+    listing_id = id_m.group(1) if id_m else None
+    if not listing_id:
         return None
 
-    # Address: find the line that looks like a street address
-    # Funda cards often have marketing text on line 1, actual address later
-    # Look for a line with street name + number + optional postcode
-    # Pattern: starts with a word, has a number, optionally followed by postcode
-    address_re = re.compile(
-        r"^([A-Z][A-Za-z\s\-\.]{2,30}\s+\d{1,4}[\s\-]?[A-Z]{0,2}\d{0,2})$"
-    )
-    address = None
-    for line in lines:
-        if address_re.match(line):
-            address = line
-            break
-    if not address:
-        address = lines[0]
-
-    # City from URL: /detail/koop/{city}/...
+    # Neighborhood/city: /detail/koop/{city}/
     city_m = re.search(r"/detail/koop/([^/]+)/", href)
-    neighborhood = city_m.group(1).replace("-", " ") if city_m else ""
+    neighborhood = city_m.group(1).replace("-", " ") if city_m else None
 
-    # Property type from URL slug
-    # URL format: /detail/koop/{city}/{type}-{slug}/{id}/
-    # e.g. /detail/koop/amsterdam/huis-schaarbeekstraat-71/80913842/
+    # Property type: /detail/koop/{city}/{type}-{slug}/{id}/
     type_m = re.search(r"/detail/koop/[^/]+/([a-z]+)-", href)
     property_type = type_m.group(1) if type_m else None
 
-    # Price
-    price, price_text = parse_price(text)
+    # --- Price: element with class "truncate" containing "€" ---
+    price = None
+    price_text = ""
+    price_m = re.search(r"€\s*([\d.]+)\s*([kv.]?[o.]?)", text)
+    if price_m:
+        raw = price_m.group(1).replace(".", "")
+        price = int(raw)
+        price_text = price_m.group(0)
 
-    # Living area: "XXX m²"
-    area_m = re.search(r"(\d+)\s*m\u00b2", text)
-    living_area_m2 = int(area_m.group(1)) if area_m else None
-
-    # Plot size (sometimes shown alongside living area): second m² value
+    # --- Living area, plot area, bedrooms, energy label ---
+    # These appear after the price line, in the format:
+    #   126 m²
+    #   113 m²
+    #   4
+    #   A
+    # or:
+    #   105 m²
+    #   3
+    #   D
+    # The number after the last m² is the bedrooms count (from the
+    # bedroom-icon SVG's sibling <span>), and the line after that
+    # is the energy label.
     area_matches = re.findall(r"(\d+)\s*m\u00b2", text)
+    living_area_m2 = int(area_matches[0]) if area_matches else None
     plot_size_m2 = int(area_matches[1]) if len(area_matches) > 1 else None
 
-    # Bedrooms: single digit followed by energy label on next line
-    # Pattern in Funda cards: "\nX\nA" where X is bedrooms, A is energy label
-    bed_m = re.search(r"\n(\d)\n([A-G+])", text)
-    bedrooms = int(bed_m.group(1)) if bed_m else None
+    # Extract bedrooms and energy label from the tail after the last m²
+    bedrooms = None
+    energy_label = None
+    last_area_pos = text.rfind("m²")
+    if last_area_pos >= 0:
+        tail = text[last_area_pos + 2:].strip()
+        tail_lines = [l.strip() for l in tail.split("\n") if l.strip()]
+        # First line after m² is bedrooms (from bedroom-icon span)
+        # Second line is energy label (A-G+)
+        if tail_lines:
+            try:
+                bedrooms = int(tail_lines[0])
+            except ValueError:
+                pass
+        if len(tail_lines) > 1 and re.match(r"^[A-G+]$", tail_lines[1]):
+            energy_label = tail_lines[1]
 
-    # Energy label (from the same pattern)
-    energy_label = bed_m.group(2) if bed_m else None
+    # --- Address ---
+    # Address is typically the first meaningful line that looks like a street
+    # address. Funda cards often have badge text ("Nieuw", "Blikvanger") on
+    # the first line, so we skip those.
+    badge_words = {"nieuw", "blikvanger", "advertentie", "verkoop", "verkoopwoning"}
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    address = None
+    for line in lines:
+        # Skip badge words
+        if line.lower() in badge_words:
+            continue
+        # Skip lines that are just postcode patterns (those are neighborhood)
+        if re.match(r"^\d{4}[A-Z]{2}\s*[A-Z]{0,2}\d{0,2}$", line):
+            continue
+        # Skip lines that look like prices
+        if "€" in line:
+            continue
+        # Skip lines that look like area measurements
+        if "m²" in line:
+            continue
+        # This should be the address
+        address = line
+        break
 
-    # Listing ID from URL: /detail/koop/.../{id}/
-    id_m = re.search(r"/(\d+)/$", href)
-    listing_id = id_m.group(1) if id_m else None
+    # Rooms is only available on detail pages, not at card level
+    rooms = None
 
-    if not listing_id:
-        return None
+    if not address:
+        # Fallback: first non-badge line
+        for line in lines:
+            if line.lower() not in badge_words:
+                address = line
+                break
 
     return {
         "listing_id": listing_id,
@@ -230,7 +271,7 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
         "property_type": property_type,
         "energy_label": energy_label,
         "status": None,  # Not available at card level
-        "rooms": None,  # Only on detail pages
+        "rooms": rooms,
         "year_built": None,  # Only on detail pages
     }
 
@@ -382,24 +423,62 @@ def _extract_page_listings(page: Page) -> list[dict]:
     """Extract listing dicts from the current page using JavaScript evaluation.
 
     Funda's listing cards have two links per listing (image + text).
+    The card data lives in a flexRow parent container (@lg:flex-row) that
+    contains the address, price, living area, rooms, and energy label.
+
     We deduplicate by listing_id in the caller.
     """
     raw = page.evaluate("""
         () => {
             const results = [];
             const allLinks = document.querySelectorAll('a[href*="/detail/koop/"]');
-            const topContainer = document.querySelector('.hide-scrollbar.flex.snap-x.snap-mandatory');
+            const seen = new Set();
 
             allLinks.forEach(link => {
-                // Skip top-position (paid) listings
-                if (topContainer && topContainer.contains(link)) return;
-
                 const href = link.getAttribute('href');
-                const parent = link.parentElement;
-                const text = parent?.innerText?.trim() || '';
-
+                
+                // Find the card container (relative overflow-hidden)
+                let parent = link.parentElement;
+                let card = null;
+                for (let d = 0; d < 15; d++) {
+                    if (!parent) break;
+                    if (parent.classList.contains('relative') && 
+                        parent.classList.contains('overflow-hidden')) {
+                        card = parent;
+                        break;
+                    }
+                    parent = parent.parentElement;
+                }
+                if (!card) return;
+                
+                // Skip duplicates (same card HTML prefix)
+                const cardKey = card.innerHTML.substring(0, 200);
+                if (seen.has(cardKey)) return;
+                seen.add(cardKey);
+                
+                // Find the flexRow parent that contains the card data
+                let flexRow = card.parentElement;
+                if (flexRow && flexRow.className && 
+                    flexRow.className.indexOf('@lg:flex-row') !== -1) {
+                    // Found it
+                } else {
+                    let el = card.parentElement;
+                    for (let d = 0; d < 10; d++) {
+                        if (!el) break;
+                        if (el.className && 
+                            el.className.indexOf('@lg:flex-row') !== -1) {
+                            flexRow = el;
+                            break;
+                        }
+                        el = el.parentElement;
+                    }
+                }
+                
+                if (!flexRow) return;
+                
+                const text = flexRow.innerText.trim();
                 if (!text || text.length < 10) return;
-
+                
                 results.push({ href, text });
             });
 
