@@ -67,7 +67,7 @@ def _format_listing_message(listing: dict) -> str:
     """Format a listing dict into a clean Telegram HTML message.
 
     Includes: address, price, living area, bedrooms, property type,
-    and a clickable link to the Funda listing.
+    score/breakdown (if available), and a clickable link to the Funda listing.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -80,17 +80,54 @@ def _format_listing_message(listing: dict) -> str:
     url = listing.get("url", "")
 
     parts = [
-        f"<b>{address}</b>",
-        f"Price: <b>{price_text} EUR</b>",
-        f"Size: {area_text}",
-        f"Bedrooms: {bed_text}",
+        f"\U0001f3e0 <b>{address}</b> \u2014 \u20ac{price_text} \u2014 {area_text} \u2014 {bed_text} bed",
     ]
+
+    # --- Score section ---
+    score = listing.get("score")
+    confidence = listing.get("score_confidence", "")
+    score_breakdown = listing.get("score_breakdown")
+
+    if score is not None and confidence == "no_data":
+        parts.append(f"Score: unavailable")
+    elif score is not None:
+        confidence_flag = ""
+        if confidence == "partial":
+            missing = []
+            if score_breakdown:
+                try:
+                    breakdown_data = json.loads(score_breakdown)
+                    for item in breakdown_data:
+                        if not item.get("matched", True):
+                            crit = item.get("criterion", "unknown")
+                            missing.append(crit)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if missing:
+                confidence_flag = f" \u26a0\ufe0f partial data ({', '.join(missing)})"
+        parts.append(f"Score: <b>{score}/100</b>{confidence_flag}")
+
+        # Breakdown lines
+        if score_breakdown:
+            try:
+                breakdown_data = json.loads(score_breakdown)
+                for item in breakdown_data:
+                    criterion = item.get("criterion", "?")
+                    earned = item.get("points_earned", 0)
+                    possible = item.get("points_possible", 0)
+                    matched = item.get("matched", True)
+                    prefix = "\u2713" if matched else "\u2717"
+                    parts.append(f"  {prefix} {criterion}: {earned}/{possible}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+    else:
+        parts.append("Score: unavailable")
 
     if property_type:
         parts.append(f"Type: {property_type}")
 
     if url:
-        parts.append(f'<a href="{url}">View on Funda</a>')
+        parts.append(f'<a href="{url}">\U0001f517 View on Funda</a>')
 
     return "\n".join(parts)
 

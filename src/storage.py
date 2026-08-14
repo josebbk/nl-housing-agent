@@ -39,9 +39,73 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                         energy_label TEXT,
                         status TEXT,
                         first_seen_at TEXT NOT NULL,
-                        notified INTEGER NOT NULL DEFAULT 0
+                        notified INTEGER NOT NULL DEFAULT 0,
+                        ownership_type TEXT,
+                        erfpacht_canon_annual REAL,
+                        garden_present INTEGER,
+                        garden_type TEXT,
+                        garden_size_m2 INTEGER,
+                        garden_orientation TEXT,
+                        balcony_present INTEGER,
+                        building_bound_outdoor_m2 INTEGER,
+                        garage_type TEXT,
+                        parking_type TEXT,
+                        insulation_raw TEXT,
+                        insulation_score REAL,
+                        heating_type TEXT,
+                        boiler_year INTEGER,
+                        amenities_raw TEXT,
+                        amenities_matched TEXT,
+                        bathrooms INTEGER,
+                        neighborhood_avg_price_m2 REAL,
+                        score INTEGER,
+                        score_breakdown TEXT,
+                        score_confidence TEXT,
+                        detail_fetched_at TEXT
                     );
                 """)
+
+                # Migrate existing tables — add Phase 2 detail/scoring columns
+                phase2_columns = [
+                    ("ownership_type", "TEXT"),
+                    ("erfpacht_canon_annual", "REAL"),
+                    ("garden_present", "INTEGER"),
+                    ("garden_type", "TEXT"),
+                    ("garden_size_m2", "INTEGER"),
+                    ("garden_orientation", "TEXT"),
+                    ("balcony_present", "INTEGER"),
+                    ("building_bound_outdoor_m2", "INTEGER"),
+                    ("garage_type", "TEXT"),
+                    ("parking_type", "TEXT"),
+                    ("insulation_raw", "TEXT"),
+                    ("insulation_score", "REAL"),
+                    ("heating_type", "TEXT"),
+                    ("boiler_year", "INTEGER"),
+                    ("amenities_raw", "TEXT"),
+                    ("amenities_matched", "TEXT"),
+                    ("bathrooms", "INTEGER"),
+                    ("neighborhood_avg_price_m2", "REAL"),
+                    ("score", "INTEGER"),
+                    ("score_breakdown", "TEXT"),
+                    ("score_confidence", "TEXT"),
+                    ("detail_fetched_at", "TEXT"),
+                ]
+                for col_name, col_type in phase2_columns:
+                    cursor.execute(
+                        f"PRAGMA table_info(listings);"
+                    )
+                    existing_cols = {row[1] for row in cursor.fetchall()}
+                    if col_name not in existing_cols:
+                        try:
+                            cursor.execute(
+                                f"ALTER TABLE listings ADD COLUMN {col_name} {col_type};"
+                            )
+                            logger.debug("Added column %s to listings table.", col_name)
+                        except sqlite3.Error as e:
+                            logger.debug(
+                                "Could not add column %s (may already exist): %s",
+                                col_name, e,
+                            )
         logger.info("Database initialized successfully at: %s", db_path)
     except sqlite3.Error as e:
         logger.exception("Failed to initialize database at %s: %s", db_path, e)
@@ -92,6 +156,20 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
         if opt_field not in data:
             data[opt_field] = None
 
+    # Phase 2 detail/scoring fields — all nullable, default to None
+    phase2_fields = [
+        "ownership_type", "erfpacht_canon_annual", "garden_present",
+        "garden_type", "garden_size_m2", "garden_orientation",
+        "balcony_present", "building_bound_outdoor_m2",
+        "garage_type", "parking_type", "insulation_raw", "insulation_score",
+        "heating_type", "boiler_year", "amenities_raw", "amenities_matched",
+        "bathrooms", "neighborhood_avg_price_m2",
+        "score", "score_breakdown", "score_confidence", "detail_fetched_at",
+    ]
+    for field in phase2_fields:
+        if field not in data:
+            data[field] = None
+
     try:
         with closing(sqlite3.connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
@@ -112,11 +190,25 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                         INSERT INTO listings (
                             listing_id, url, address, neighborhood, price, living_area_m2,
                             plot_size_m2, rooms, bedrooms, property_type, year_built,
-                            energy_label, status, first_seen_at, notified
+                            energy_label, status, first_seen_at, notified,
+                            ownership_type, erfpacht_canon_annual, garden_present,
+                            garden_type, garden_size_m2, garden_orientation,
+                            balcony_present, building_bound_outdoor_m2,
+                            garage_type, parking_type, insulation_raw, insulation_score,
+                            heating_type, boiler_year, amenities_raw, amenities_matched,
+                            bathrooms, neighborhood_avg_price_m2,
+                            score, score_breakdown, score_confidence, detail_fetched_at
                         ) VALUES (
                             :listing_id, :url, :address, :neighborhood, :price, :living_area_m2,
                             :plot_size_m2, :rooms, :bedrooms, :property_type, :year_built,
-                            :energy_label, :status, :first_seen_at, :notified
+                            :energy_label, :status, :first_seen_at, :notified,
+                            :ownership_type, :erfpacht_canon_annual, :garden_present,
+                            :garden_type, :garden_size_m2, :garden_orientation,
+                            :balcony_present, :building_bound_outdoor_m2,
+                            :garage_type, :parking_type, :insulation_raw, :insulation_score,
+                            :heating_type, :boiler_year, :amenities_raw, :amenities_matched,
+                            :bathrooms, :neighborhood_avg_price_m2,
+                            :score, :score_breakdown, :score_confidence, :detail_fetched_at
                         );
                     """
                     cursor.execute(query, data)
@@ -142,6 +234,13 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                     "url", "address", "neighborhood", "price", "living_area_m2",
                     "plot_size_m2", "rooms", "bedrooms", "property_type",
                     "year_built", "energy_label", "status", "notified",
+                    "ownership_type", "erfpacht_canon_annual", "garden_present",
+                    "garden_type", "garden_size_m2", "garden_orientation",
+                    "balcony_present", "building_bound_outdoor_m2",
+                    "garage_type", "parking_type", "insulation_raw", "insulation_score",
+                    "heating_type", "boiler_year", "amenities_raw", "amenities_matched",
+                    "bathrooms", "neighborhood_avg_price_m2",
+                    "score", "score_breakdown", "score_confidence", "detail_fetched_at",
                 ]
                 set_clause = ", ".join(f"{col} = :{col}" for col in updatable)
                 if needs_renotify:

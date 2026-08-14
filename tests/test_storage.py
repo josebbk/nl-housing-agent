@@ -82,6 +82,14 @@ class StorageContractTestCase(unittest.TestCase):
             "living_area_m2", "plot_size_m2", "rooms", "bedrooms",
             "property_type", "year_built", "energy_label", "status",
             "first_seen_at", "notified",
+            # Phase 2 detail/scoring columns
+            "ownership_type", "erfpacht_canon_annual", "garden_present",
+            "garden_type", "garden_size_m2", "garden_orientation",
+            "balcony_present", "building_bound_outdoor_m2",
+            "garage_type", "parking_type", "insulation_raw", "insulation_score",
+            "heating_type", "boiler_year", "amenities_raw", "amenities_matched",
+            "bathrooms", "neighborhood_avg_price_m2",
+            "score", "score_breakdown", "score_confidence", "detail_fetched_at",
         }
         self.assertEqual(expected, cols)
 

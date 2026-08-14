@@ -1,0 +1,24 @@
+{
+  "weights": {
+    "neighborhood_value": 22,
+    "construction_condition": 18,
+    "ownership": 15,
+    "energy_label": 13,
+    "amenities": 10,
+    "garden": 10,
+    "parking": 7,
+    "bathrooms": 5
+  },
+  "energy_label_scale": ["G","F","E","D","C","B","A","A+","A++","A+++","A++++"],
+  "amenities_tracked": [
+    "airconditioning", "alarminstallatie", "buitenzonwering",
+    "tv kabel", "glasvezelkabel", "mechanische ventilatie", "rolluiken"
+  ],
+  "insulation_keywords": {
+    "components": ["dakisolatie", "vloerisolatie", "muurisolatie", "spouwmuurisolatie"],
+    "glass_tiers": ["enkel glas", "dubbel glas", "dubbelglas", "hr-glas", "hr glas", "hr+", "hr++"]
+  },
+  "neighborhood_value_thresholds": { "good_ratio": 0.8, "bad_ratio": 1.2 },
+  "garden_size_cap_m2": 50,
+  "garden_orientation_bonus": ["zuiden", "westen"]
+}

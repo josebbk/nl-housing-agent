@@ -254,6 +254,44 @@ product.
 
 ---
 
+## 12a. Ranking and Scoring
+
+Every listing that passes the Phase 1 hard filters is scored before
+notification. The score reflects how well a listing matches the owner's
+preferences across eight weighted criteria:
+
+1. **Neighborhood value** — asking price per m² relative to the
+   neighborhood average.
+2. **Construction condition** — building age and insulation quality.
+3. **Ownership** — full ownership, erfpacht without canon, or erfpacht
+   with an annual canon.
+4. **Energy label** — from G (lowest) to A++++ (highest).
+5. **Amenities** — keyword matching against tracked amenities
+   (airconditioning, alarm system, sun shading, TV cable, fiber optic,
+   mechanical ventilation, roller shutters).
+6. **Garden** — presence, size, and orientation (south/west bonus).
+7. **Parking** — type (private, carport, paid, public).
+8. **Bathrooms** — count normalized against a maximum.
+
+Each criterion contributes a weighted subscore. The final score is a
+0–100 number, renormalized so that only criteria with available data
+contribute to the total. When a criterion has no data, it is excluded
+from the calculation rather than penalized.
+
+A confidence flag accompanies each score:
+
+* **Full** — all criteria have data.
+* **Partial** — some criteria are missing data (the notification
+  indicates which ones).
+* **No data** — no scoring data is available (score shown as
+  "unavailable").
+
+The exact weights and keyword dictionaries are configurable via
+`config/preferences.json` and are not considered product-scope changes
+when adjusted.
+
+---
+
 ## 12. Phase Roadmap & Definition of Done
 
 ### Phase 1 — Basic Monitoring
@@ -296,12 +334,15 @@ Phase 1 is considered complete and ready for production monitoring when all of t
 
 ### Phase 2 — Improved Filtering
 
+Completed:
+
+* Detail-page scraping and preference-based scoring (Section 12a).
+
 Potential future work:
 
 * configurable filters
 * more detailed property preferences
-* better notification formatting
-* additional ranking/scoring
+* additional ranking/scoring refinements
 
 Phase 2 details are not finalized.
 

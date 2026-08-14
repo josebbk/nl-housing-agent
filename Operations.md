@@ -525,6 +525,30 @@ Existing listing → IGNORE → NO duplicate notification
 
 This is one of the most important Phase 1 operational tests.
 
+### Phase 2 — Scoring verification
+
+Before enabling production scheduling with scoring enabled, perform these
+additional verification steps:
+
+1. **Dry-run review of scored output** — run with `--dry-run` and inspect
+   the logs and database. Confirm:
+   * breakdown math is correct (weighted average renormalized properly)
+   * missing criteria are excluded from renormalization (not penalized)
+   * `score_breakdown` is valid JSON in the database
+   * scores fall in the expected 0–100 range
+
+2. **Confidence flag on missing neighborhood data** — confirm the
+   confidence flag appears correctly on listings where
+   `neighborhood_avg_price_m2` is `None` (confirmed absent on some real
+   listings). The notification should show `"⚠ partial data (neighborhood_value)"`
+   and the database should store `score_confidence = "partial"`.
+
+3. **Live run** — a real run with notifications enabled, confirming the
+   score section renders correctly in the Telegram message.
+
+Only after all three steps pass is the scoring feature considered
+operationally verified.
+
 ---
 
 ## 15. Error Handling

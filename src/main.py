@@ -1,12 +1,15 @@
 """Orchestrate scraper → storage → filter → notification into the Phase 1 scrape flow."""
 
 import argparse
+import json
 import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .scraper import scrape_funda
+from .detail_scraper import fetch_listing_details
+from .scoring import score_listing, load_preferences
 from .storage import (
     init_db,
     insert_listing,
@@ -188,18 +191,57 @@ def main() -> None:
         stats["errors"].append(f"Fetch matching: {exc}")
         _send_failure_alert_and_exit(run_start, stats)
 
+    # --- 4.5. Detail-page fetch + scoring (Phase 2) ---
+    # Only listings that are new/updated AND already pass Phase 1 filters
+    # get a detail-page fetch — this bounds the extra request volume.
+    preferences = load_preferences()
+    scored_listings = []
+    for listing in matching:
+        try:
+            detail = fetch_listing_details(listing["url"])
+            result = score_listing(detail, preferences)
+
+            # Merge detail fields + score into the listing dict for storage
+            listing.update(detail)
+            if result.score is not None:
+                listing["score"] = result.score
+            if result.breakdown:
+                listing["score_breakdown"] = json.dumps(result.breakdown)
+            listing["score_confidence"] = result.confidence
+
+            # Persist detail fields + score to the database row
+            insert_listing(listing, db_path)
+
+            scored_listings.append(listing)
+            logger.info(
+                "Scored listing %s: %d/100 (%s)",
+                listing.get("listing_id"),
+                result.score if result.score is not None else 0,
+                result.confidence,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Detail fetch/scoring failed for listing %s: %s — "
+                "falling back to unscored notification",
+                listing.get("listing_id", "?"),
+                exc,
+            )
+            scored_listings.append(listing)
+
     # --- 5. Send notifications; mark each listing notified only on success ---
     if dry_run:
-        logger.info("Dry-run: skipping %d notification(s)", len(matching))
+        logger.info("Dry-run: skipping %d notification(s)", len(scored_listings))
+        final_listings = []
     else:
+        final_listings = scored_listings
         try:
-            results = send_notifications(matching)
+            results = send_notifications(scored_listings)
         except Exception as exc:
             logger.error("Notification batch failed: %s", exc, exc_info=True)
             stats["errors"].append(f"Notifications: {exc}")
-            results = [False] * len(matching)
+            results = [False] * len(scored_listings)
 
-        for listing, success in zip(matching, results):
+        for listing, success in zip(scored_listings, results):
             listing_id = listing.get("listing_id", "?")
             if success:
                 try:

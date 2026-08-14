@@ -124,6 +124,116 @@ scraping failures and notification failures are easier to diagnose.
 
 ---
 
+## Phase 2 — Detail-Page Scraping & Scoring
+
+After Phase 1 filtering identifies matching listings, each listing
+undergoes a detail-page fetch and preference-based scoring before
+notification.
+
+### Data flow
+
+```
+Phase 1 filter match
+       ↓
+  fetch_listing_details(url)
+       ↓
+  score_listing(detail, preferences)
+       ↓
+  persist detail fields + score to DB row
+       ↓
+  notification with score breakdown
+```
+
+### New modules
+
+* **`src/detail_scraper.py`** — Fetches and parses a single Funda listing
+  detail page. Reuses the same `urllib` → `data:` URL → Playwright
+  rendering technique from `scraper.py` to bypass Akamai bot-protection.
+  Returns a dict with all detail fields (Section 3 of the spec). Any
+  field that cannot be parsed is set to `None` — never omitted, never
+  guessed.
+
+* **`src/scoring.py`** — Scores a listing's detail data against user
+  preferences loaded from `config/preferences.json`. Implements the
+  renormalization algorithm: when a criterion has no data, it is
+  excluded from the weighted average rather than penalized. Returns a
+  `ScoreResult` with score (0–100), breakdown, confidence flag, and
+  missing criteria list.
+
+* **`config/preferences.json`** — Hand-editable weights + keyword
+  dictionaries. Weights sum to 100 by convention.
+
+### Keyword-dictionary-over-enum design decision
+
+Fields like `Voorzieningen`, `Isolatie`, `Soort garage`, and
+`Soort parkeergelegenheid` are **free text written by individual listing
+agents**, not a fixed set of values. Verified against 3 real listings
+(Amsterdam, Mill, Wijchen): `Voorzieningen` alone produced three
+completely non-overlapping lists across three listings.
+
+Therefore, the scoring uses **substring/keyword matching** against the
+dictionaries in `config/preferences.json`, case-insensitive, and ignores
+anything not in the dictionary rather than failing.
+
+Fields confirmed genuinely structured (safe for direct parsing):
+`Energielabel` (ordinal), `Bouwjaar` (int), `Vraagprijs`,
+`Vraagprijs per m²`, all `Oppervlakten` fields,
+`Aantal kamers`/`Aantal badkamers` (consistent phrasing, regex-safe).
+
+### Schema additions
+
+New nullable columns on `listings` (added via `ALTER TABLE`):
+
+```
+ownership_type TEXT
+erfpacht_canon_annual REAL
+garden_present INTEGER
+garden_type TEXT
+garden_size_m2 INTEGER
+garden_orientation TEXT
+balcony_present INTEGER
+building_bound_outdoor_m2 INTEGER
+garage_type TEXT
+parking_type TEXT
+insulation_raw TEXT
+insulation_score REAL
+heating_type TEXT
+boiler_year INTEGER
+amenities_raw TEXT
+amenities_matched TEXT
+bathrooms INTEGER
+neighborhood_avg_price_m2 REAL
+score INTEGER
+score_breakdown TEXT
+score_confidence TEXT
+detail_fetched_at TEXT
+```
+
+### Browser usage
+
+Each detail-page fetch creates its own Playwright browser instance,
+reusing the same Akamai-bypass technique. Detail fetching happens
+sequentially after the main scrape completes, so no concurrent browser
+instances are ever open.
+
+### Notification format
+
+Scored notifications include:
+
+```
+🏠 {address} — €{price} — {living_area}m² — {bedrooms} bed
+Score: {score}/100{confidence_flag}
+  ✓ neighborhood_value: 18/22
+  ✗ ownership: 0/15
+🔗 {url}
+```
+
+The confidence flag shows `"⚠ partial data ({missing criteria})"` when
+data is incomplete, and `Score: unavailable` when no scoring data is
+available.
+
+---
+
 ## Phase 1 Filtering Criteria
 
 The confirmed Phase 1 filtering criteria serve as the single source of truth across all project documentation:
@@ -490,6 +600,11 @@ remain an `operations.md` decision.
 A configurable filter system is deferred until Phase 2.
 
 Do not build a complex configuration framework prematurely.
+
+*Note:* Ranking/scoring configuration is now resolved via
+`config/preferences.json` (see Section 4a below). This is distinct from
+the Phase 2 filter-threshold configuration, which remains an open item
+for a future task. Do not conflate the two.
 
 ### 5. Scheduling evolution
 
