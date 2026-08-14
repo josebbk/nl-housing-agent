@@ -92,6 +92,12 @@ class StorageContractTestCase(unittest.TestCase):
         self.assertTrue(listing_exists("80913842", self.db))
 
     def test_nullable_card_level_fields_are_stored_not_dropped(self):
+        missing = scraper_shaped_listing(listing_id="missing-req", price=None,
+                                         living_area_m2=None, bedrooms=None)
+        self.assertEqual(insert_listing(missing, self.db), "unchanged")
+        self.assertEqual(self._count_rows(), 0)
+        self.assertFalse(listing_exists("missing-req", self.db))
+
         listing = scraper_shaped_listing(listing_id="null-fields",
                                          plot_size_m2=None,
                                          property_type=None,
