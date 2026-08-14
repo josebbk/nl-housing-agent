@@ -146,6 +146,8 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                 set_clause = ", ".join(f"{col} = :{col}" for col in updatable)
                 if needs_renotify:
                     data["notified"] = 0
+                else:
+                    data["notified"] = existing["notified"]
 
                 update_data = {col: data.get(col) for col in updatable}
 

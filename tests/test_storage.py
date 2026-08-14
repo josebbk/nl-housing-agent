@@ -66,6 +66,12 @@ class StorageContractTestCase(unittest.TestCase):
         with sqlite3.connect(self.db) as conn:
             return conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
 
+    def _notified(self, listing_id):
+        with sqlite3.connect(self.db) as conn:
+            return conn.execute(
+                "SELECT notified FROM listings WHERE listing_id = ?", (listing_id,)
+            ).fetchone()[0]
+
     def test_table_columns_match_scraper_contract(self):
         with sqlite3.connect(self.db) as conn:
             cols = {
@@ -86,23 +92,25 @@ class StorageContractTestCase(unittest.TestCase):
         self.assertTrue(listing_exists("80913842", self.db))
 
     def test_nullable_card_level_fields_are_stored_not_dropped(self):
-        listing = scraper_shaped_listing(listing_id="null-fields", price=None,
-                                         living_area_m2=None, bedrooms=None,
-                                         property_type=None, energy_label=None)
-        self.assertTrue(insert_listing(listing, self.db))
+        listing = scraper_shaped_listing(listing_id="null-fields",
+                                         plot_size_m2=None,
+                                         property_type=None,
+                                         year_built=None,
+                                         energy_label=None)
+        self.assertEqual(insert_listing(listing, self.db), "inserted")
         self.assertEqual(self._count_rows(), 1)
         with sqlite3.connect(self.db) as conn:
             row = conn.execute(
-                "SELECT price, living_area_m2, rooms, property_type, status, "
-                "year_built, energy_label FROM listings WHERE listing_id = ?",
+                "SELECT price, living_area_m2, rooms, plot_size_m2, property_type, "
+                "status, year_built, energy_label FROM listings WHERE listing_id = ?",
                 ("null-fields",),
             ).fetchone()
-        self.assertEqual(row, (None, None, None, None, None, None, None))
+        self.assertEqual(row, (650000, 110, None, None, None, None, None, None))
 
     def test_duplicate_listing_id_is_not_duplicated(self):
         listing = scraper_shaped_listing()
-        self.assertTrue(insert_listing(listing, self.db))
-        self.assertFalse(insert_listing(listing, self.db))
+        self.assertEqual(insert_listing(listing, self.db), "inserted")
+        self.assertEqual(insert_listing(listing, self.db), "unchanged")
         self.assertEqual(self._count_rows(), 1)
 
     def test_insert_requires_listing_id(self):
@@ -164,6 +172,44 @@ class StorageContractTestCase(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row[0], 0)
         self.assertIsNotNone(row[1])
+
+    def test_notified_is_preserved_on_unchanged_rescrape(self):
+        listing = scraper_shaped_listing()
+        insert_listing(listing, self.db)
+        self.assertEqual(self._notified("80913842"), 0)
+        self.assertEqual(len(fetch_unnotified_matching_listings(self.db)), 1)
+
+        mark_as_notified("80913842", self.db)
+        self.assertEqual(self._notified("80913842"), 1)
+
+        result = insert_listing(scraper_shaped_listing(), self.db)
+        self.assertEqual(result, "unchanged")
+        self.assertEqual(self._notified("80913842"), 1)
+        self.assertEqual(fetch_unnotified_matching_listings(self.db), [])
+
+    def test_notified_is_reset_on_price_or_status_change(self):
+        insert_listing(scraper_shaped_listing(), self.db)
+        mark_as_notified("80913842", self.db)
+
+        price_result = insert_listing(scraper_shaped_listing(price=620000), self.db)
+        self.assertEqual(price_result, "updated_renotify")
+        self.assertEqual(self._notified("80913842"), 0)
+
+        mark_as_notified("80913842", self.db)
+        status_result = insert_listing(scraper_shaped_listing(status="verkocht"), self.db)
+        self.assertEqual(status_result, "updated_renotify")
+        self.assertEqual(self._notified("80913842"), 0)
+
+    def test_changed_other_fields_keep_notified_intact(self):
+        insert_listing(scraper_shaped_listing(), self.db)
+        mark_as_notified("80913842", self.db)
+
+        result = insert_listing(
+            scraper_shaped_listing(address="Andere Straat 2"), self.db
+        )
+        self.assertEqual(result, "updated_unchanged")
+        self.assertEqual(self._notified("80913842"), 1)
+        self.assertEqual(fetch_unnotified_matching_listings(self.db), [])
 
 
 if __name__ == "__main__":
