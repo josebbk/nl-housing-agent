@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .config import FilterConfig
 from .scraper import scrape_funda
 from .detail_scraper import fetch_listing_details
 from .scoring import score_listing, load_preferences
@@ -23,15 +24,6 @@ logger = logging.getLogger(__name__)
 # Default database path, anchored to the project root so it does not depend on
 # the process working directory.
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "funda.db"
-
-# Phase 1 filter values. These configure the Funda search URL built by
-# scraper.py. The authoritative filter evaluation lives in storage.py's
-# fetch_unnotified_matching_listings(); there is no second filter
-# implementation here.
-PRICE_MIN = 550_000
-PRICE_MAX = 750_000
-BEDROOMS_MIN = 3
-LIVING_AREA_MIN = 100
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,6 +45,11 @@ def main() -> None:
     args = parse_args()
     dry_run = args.dry_run
     db_path = args.db_path
+
+    # Load search filters from the environment (FUNDA_* vars via .env).
+    # This is the single source of truth for filter values, shared by the
+    # scraper call and the storage matching query below.
+    filters = FilterConfig.from_env()
 
     # --- Logging setup ---
     log_dir = Path(__file__).resolve().parent.parent / "logs"
@@ -111,10 +108,10 @@ def main() -> None:
         listings = scrape_funda(
             area="amsterdam",
             offering_type="koop",
-            price_min=PRICE_MIN,
-            price_max=PRICE_MAX,
-            floor_area_min=LIVING_AREA_MIN,
-            bedrooms_min=BEDROOMS_MIN,
+            price_min=filters.price_min,
+            price_max=filters.price_max,
+            floor_area_min=filters.living_area_min,
+            bedrooms_min=filters.bedrooms_min,
             max_pages=5,
         )
         stats["listings_scraped"] = len(listings)
@@ -184,7 +181,7 @@ def main() -> None:
 
     # --- 4. Fetch unnotified matching listings (filters applied in storage) ---
     try:
-        matching = fetch_unnotified_matching_listings(db_path)
+        matching = fetch_unnotified_matching_listings(db_path, filters=filters)
         stats["matching_listings"] = len(matching)
     except Exception as exc:
         logger.error("Failed to fetch matching listings: %s", exc, exc_info=True)

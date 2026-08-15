@@ -45,6 +45,8 @@ sys.modules.setdefault(
 )
 
 from src import main as main_module  # noqa: E402
+from src import config  # noqa: E402
+from src.config import FilterConfig  # noqa: E402
 
 
 def listing_data(listing_id="80913842", **overrides):
@@ -240,6 +242,124 @@ class MainOrchestrationTestCase(unittest.TestCase):
              mock.patch.object(main_module, "send_notifications", return_value=[]):
             run_main([], self.db)
         self.assertEqual(self._count_rows(), 0)
+
+
+class MainConfigIntegrationTestCase(unittest.TestCase):
+    """Verify FilterConfig flows from the environment through main.py.
+
+    Each test starts from a clean process environment so no real .env or
+    shell variables leak in, and config._load_env() is stubbed so the
+    project's .env is never read. No real network/Telegram is used.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "funda.db")
+
+        env_patcher = mock.patch.dict(os.environ, {}, clear=True)
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+        load_patcher = mock.patch.object(config, "_load_env")
+        load_patcher.start()
+        self.addCleanup(load_patcher.stop)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_default_config_passes_phase1_values_to_scraper(self):
+        captured = {}
+
+        def fake_scrape(**kwargs):
+            captured.update(kwargs)
+            return [listing_data()]
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "send_notifications", return_value=[True]):
+            run_main([], self.db)
+
+        self.assertEqual(captured["price_min"], 550000)
+        self.assertEqual(captured["price_max"], 750000)
+        self.assertEqual(captured["bedrooms_min"], 3)
+        self.assertEqual(captured["floor_area_min"], 100)
+
+    def test_custom_config_passes_values_to_scraper(self):
+        os.environ["FUNDA_PRICE_MIN"] = "600000"
+        os.environ["FUNDA_PRICE_MAX"] = "700000"
+        os.environ["FUNDA_BEDROOMS_MIN"] = "4"
+        os.environ["FUNDA_LIVING_AREA_MIN"] = "120"
+
+        captured = {}
+
+        def fake_scrape(**kwargs):
+            captured.update(kwargs)
+            return [listing_data()]
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "send_notifications", return_value=[True]):
+            run_main([], self.db)
+
+        self.assertEqual(captured["price_min"], 600000)
+        self.assertEqual(captured["price_max"], 700000)
+        self.assertEqual(captured["bedrooms_min"], 4)
+        self.assertEqual(captured["floor_area_min"], 120)
+
+    def test_same_filterconfig_passed_to_storage(self):
+        os.environ["FUNDA_PRICE_MIN"] = "600000"
+        os.environ["FUNDA_PRICE_MAX"] = "700000"
+        os.environ["FUNDA_BEDROOMS_MIN"] = "4"
+        os.environ["FUNDA_LIVING_AREA_MIN"] = "120"
+
+        captured = {}
+
+        def fake_fetch(db_path, filters=None):
+            captured["filters"] = filters
+            return []
+
+        with mock.patch.object(main_module, "scrape_funda", return_value=[listing_data()]), \
+             mock.patch.object(main_module, "fetch_unnotified_matching_listings",
+                               side_effect=fake_fetch), \
+             mock.patch.object(main_module, "send_notifications", return_value=[]):
+            run_main([], self.db)
+
+        self.assertIsInstance(captured["filters"], FilterConfig)
+        self.assertEqual(captured["filters"], FilterConfig.from_env())
+        self.assertEqual(captured["filters"].price_min, 600000)
+        self.assertEqual(captured["filters"].price_max, 700000)
+        self.assertEqual(captured["filters"].bedrooms_min, 4)
+        self.assertEqual(captured["filters"].living_area_min, 120)
+
+    def test_optional_preferences_go_to_storage_not_scraper(self):
+        os.environ["FUNDA_PROPERTY_TYPE"] = "appartement"
+        os.environ["FUNDA_PLOT_SIZE_MIN"] = "50"
+        os.environ["FUNDA_ENERGY_LABEL_MIN"] = "B"
+
+        captured_scrape = {}
+        captured_filters = {}
+
+        def fake_scrape(**kwargs):
+            captured_scrape.update(kwargs)
+            return [listing_data()]
+
+        def fake_fetch(db_path, filters=None):
+            captured_filters["filters"] = filters
+            return []
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "fetch_unnotified_matching_listings",
+                               side_effect=fake_fetch), \
+             mock.patch.object(main_module, "send_notifications", return_value=[]):
+            run_main([], self.db)
+
+        # Optional preferences must not leak into the scraper call.
+        self.assertNotIn("property_type", captured_scrape)
+        self.assertNotIn("plot_size_min", captured_scrape)
+        self.assertNotIn("energy_label_min", captured_scrape)
+
+        # They must remain part of the FilterConfig used for storage.
+        self.assertEqual(captured_filters["filters"].property_type, "appartement")
+        self.assertEqual(captured_filters["filters"].plot_size_min, 50)
+        self.assertEqual(captured_filters["filters"].energy_label_min, "B")
 
 
 if __name__ == "__main__":
