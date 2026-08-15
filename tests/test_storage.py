@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.config import DEFAULT_FILTERS, FilterConfig
 from src.storage import (
     init_db,
     insert_listing,
@@ -224,6 +225,164 @@ class StorageContractTestCase(unittest.TestCase):
         self.assertEqual(result, "updated_unchanged")
         self.assertEqual(self._notified("80913842"), 1)
         self.assertEqual(fetch_unnotified_matching_listings(self.db), [])
+
+    # --- Phase 2: configurable FilterConfig filters ---
+
+    def test_default_filters_match_positional_phase1_call(self):
+        insert_listing(scraper_shaped_listing(listing_id="matching"), self.db)
+        self.assertEqual(
+            fetch_unnotified_matching_listings(self.db),
+            fetch_unnotified_matching_listings(self.db, filters=DEFAULT_FILTERS),
+        )
+
+    def test_custom_price_range_filter(self):
+        for listing in [
+            scraper_shaped_listing(listing_id="lo", price=550000),
+            scraper_shaped_listing(listing_id="mid", price=650000),
+            scraper_shaped_listing(listing_id="hi", price=750000),
+            scraper_shaped_listing(listing_id="out", price=800000),
+        ]:
+            insert_listing(listing, self.db)
+
+        filters = FilterConfig(price_min=600000, price_max=700000,
+                               bedrooms_min=3, living_area_min=100)
+        results = fetch_unnotified_matching_listings(self.db, filters=filters)
+        self.assertEqual([r["listing_id"] for r in results], ["mid"])
+
+    def test_custom_bedrooms_min_filter(self):
+        for listing in [
+            scraper_shaped_listing(listing_id="b2", bedrooms=2),
+            scraper_shaped_listing(listing_id="b3", bedrooms=3),
+            scraper_shaped_listing(listing_id="b4", bedrooms=4),
+        ]:
+            insert_listing(listing, self.db)
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=4, living_area_min=100)
+        results = fetch_unnotified_matching_listings(self.db, filters=filters)
+        self.assertEqual([r["listing_id"] for r in results], ["b4"])
+
+    def test_custom_living_area_min_filter(self):
+        for listing in [
+            scraper_shaped_listing(listing_id="s80", living_area_m2=80),
+            scraper_shaped_listing(listing_id="s120", living_area_m2=120),
+        ]:
+            insert_listing(listing, self.db)
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=120)
+        results = fetch_unnotified_matching_listings(self.db, filters=filters)
+        self.assertEqual([r["listing_id"] for r in results], ["s120"])
+
+    def test_property_type_filter(self):
+        insert_listing(
+            scraper_shaped_listing(listing_id="huis", property_type="huis"), self.db
+        )
+        insert_listing(
+            scraper_shaped_listing(listing_id="app", property_type="appartement"), self.db
+        )
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               property_type="appartement")
+        results = fetch_unnotified_matching_listings(self.db, filters=filters)
+        self.assertEqual([r["listing_id"] for r in results], ["app"])
+
+    def test_plot_size_min_filter(self):
+        insert_listing(
+            scraper_shaped_listing(listing_id="small", plot_size_m2=40), self.db
+        )
+        insert_listing(
+            scraper_shaped_listing(listing_id="big", plot_size_m2=120), self.db
+        )
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               plot_size_min=50)
+        results = fetch_unnotified_matching_listings(self.db, filters=filters)
+        self.assertEqual([r["listing_id"] for r in results], ["big"])
+
+    def test_energy_label_min_filter(self):
+        for listing in [
+            scraper_shaped_listing(listing_id="label-a", energy_label="A"),
+            scraper_shaped_listing(listing_id="label-c", energy_label="C"),
+            scraper_shaped_listing(listing_id="label-g", energy_label="G"),
+        ]:
+            insert_listing(listing, self.db)
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               energy_label_min="B")
+        results = fetch_unnotified_matching_listings(self.db, filters=filters)
+        self.assertEqual([r["listing_id"] for r in results], ["label-a"])
+
+    def test_energy_label_min_is_uppercase_normalized(self):
+        insert_listing(
+            scraper_shaped_listing(listing_id="label-a", energy_label="A"), self.db
+        )
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               energy_label_min="a")
+        results = fetch_unnotified_matching_listings(self.db, filters=filters)
+        self.assertEqual([r["listing_id"] for r in results], ["label-a"])
+
+    def test_unknown_energy_label_min_raises_value_error(self):
+        insert_listing(
+            scraper_shaped_listing(listing_id="label-a", energy_label="A"), self.db
+        )
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               energy_label_min="Z")
+        with self.assertRaises(ValueError):
+            fetch_unnotified_matching_listings(self.db, filters=filters)
+
+    def test_none_preference_disables_that_preference(self):
+        insert_listing(scraper_shaped_listing(), self.db)
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               property_type=None, plot_size_min=None,
+                               energy_label_min=None)
+        results = fetch_unnotified_matching_listings(self.db, filters=filters)
+        self.assertEqual([r["listing_id"] for r in results], ["80913842"])
+
+    def test_null_property_type_does_not_pass_property_type_filter(self):
+        insert_listing(
+            scraper_shaped_listing(listing_id="no-type", property_type=None), self.db
+        )
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               property_type="appartement")
+        self.assertEqual(
+            fetch_unnotified_matching_listings(self.db, filters=filters), []
+        )
+
+    def test_null_plot_size_does_not_pass_plot_size_filter(self):
+        insert_listing(
+            scraper_shaped_listing(listing_id="no-plot", plot_size_m2=None), self.db
+        )
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               plot_size_min=50)
+        self.assertEqual(
+            fetch_unnotified_matching_listings(self.db, filters=filters), []
+        )
+
+    def test_null_energy_label_does_not_pass_energy_label_filter(self):
+        insert_listing(
+            scraper_shaped_listing(listing_id="no-label", energy_label=None), self.db
+        )
+
+        filters = FilterConfig(price_min=550000, price_max=750000,
+                               bedrooms_min=3, living_area_min=100,
+                               energy_label_min="C")
+        self.assertEqual(
+            fetch_unnotified_matching_listings(self.db, filters=filters), []
+        )
 
 
 if __name__ == "__main__":

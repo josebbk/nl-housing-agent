@@ -1,14 +1,22 @@
+import json
 import logging
 import sqlite3
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
+from .config import DEFAULT_FILTERS, FilterConfig
+
 # Setup logging
 logger = logging.getLogger(__name__)
 
 # Default database path: project_root/data/funda.db
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "funda.db"
+
+# Project energy-label ordering (worst -> best). The scale lives in
+# config/preferences.json and is used by scoring.py; the storage filter
+# reuses this project-defined ordering rather than inventing a new one.
+_PREFERENCES_PATH = Path(__file__).resolve().parent.parent / "config" / "preferences.json"
 
 def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
     """
@@ -319,30 +327,79 @@ def mark_as_notified(listing_id: str, db_path: Path | str = DEFAULT_DB_PATH) -> 
         logger.exception("Failed to mark listing %s as notified at %s: %s", listing_id, db_path, e)
         raise
 
-def fetch_unnotified_matching_listings(db_path: Path | str = DEFAULT_DB_PATH) -> list[dict]:
+def _acceptable_energy_labels(min_label: str) -> list[str]:
+    """Return the energy labels that satisfy ``energy_label_min``.
+
+    Uses the project-defined ordinal scale from config/preferences.json
+    (worst -> best). A listing passes when its energy label is at least as
+    good as ``min_label`` on that scale. Raises ValueError if the configured
+    minimum is not a known label on the scale.
+    """
+    with open(_PREFERENCES_PATH) as f:
+        scale = json.load(f).get("energy_label_scale", [])
+    try:
+        min_index = scale.index(min_label)
+    except ValueError:
+        raise ValueError(
+            f"energy_label_min {min_label!r} is not a known energy label "
+            f"on the project scale {scale}."
+        ) from None
+    return scale[min_index:]
+
+
+def fetch_unnotified_matching_listings(
+    db_path: Path | str = DEFAULT_DB_PATH,
+    filters: FilterConfig = DEFAULT_FILTERS,
+) -> list[dict]:
     """
     Fetches all listings that have NOT yet been notified (notified = 0)
-    and match the Phase 1 filtering criteria:
+    and match the given filter criteria.
+
+    Defaults to the frozen Phase 1 criteria (via DEFAULT_FILTERS):
     - Price: €550,000 to €750,000 (inclusive)
     - Bedrooms: >= 3
     - Living area: >= 100 m2
-    
+
+    Optional preferences (property_type, plot_size_min, energy_label_min)
+    are only applied when they are not None. NULL optional listing fields
+    never satisfy an enabled preference filter.
+
     Returns a list of dictionaries representing the matching listings.
     """
     db_path = Path(db_path)
-    query = """
-        SELECT * FROM listings
-        WHERE notified = 0
-          AND price >= 550000
-          AND price <= 750000
-          AND bedrooms >= 3
-          AND living_area_m2 >= 100;
-    """
+
+    conditions = ["notified = 0"]
+    params: list = []
+
+    conditions.append("price >= ?")
+    params.append(filters.price_min)
+    conditions.append("price <= ?")
+    params.append(filters.price_max)
+    conditions.append("bedrooms >= ?")
+    params.append(filters.bedrooms_min)
+    conditions.append("living_area_m2 >= ?")
+    params.append(filters.living_area_min)
+
+    if filters.property_type is not None:
+        conditions.append("property_type = ?")
+        params.append(filters.property_type)
+
+    if filters.plot_size_min is not None:
+        conditions.append("plot_size_m2 >= ?")
+        params.append(filters.plot_size_min)
+
+    if filters.energy_label_min is not None:
+        acceptable = _acceptable_energy_labels(filters.energy_label_min)
+        placeholders = ", ".join("?" for _ in acceptable)
+        conditions.append(f"UPPER(energy_label) IN ({placeholders})")
+        params.extend(acceptable)
+
+    query = "SELECT * FROM listings WHERE {};".format(" AND ".join(conditions))
     try:
         with closing(sqlite3.connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute(query)
+            cursor.execute(query, tuple(params))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
     except sqlite3.Error as e:
