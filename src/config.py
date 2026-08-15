@@ -1,35 +1,26 @@
 """Phase 2 configurable search filters (single source of truth).
 
 ``FilterConfig`` is the frozen, immutable container for the housing search
-criteria. The Phase 1 hardcoded filter values live here as defaults, and
-``from_env()`` overrides them from ``FUNDA_*`` environment variables loaded
-through the project's existing python-dotenv convention (see ``src/notifier.py``).
+criteria. Values are loaded from the human-editable filter file
+``config/filters.json`` (project-root-relative) via ``from_file()``; the
+Phase 1 hardcoded filter values serve as the defaults. Secrets and
+environment-specific sensitive values stay in ``.env`` (loaded by
+``src/notifier.py``), never in the filter file.
 
 Only this module defines the filter defaults. ``storage.py`` and ``main.py``
 must import ``DEFAULT_FILTERS`` / ``FilterConfig`` from here rather than
 redefining them.
 """
 
+import json
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_ENV_PATH = _PROJECT_ROOT / ".env"
-
-# Environment variable names (frozen Phase 2 contract).
-_ENV_PRICE_MIN = "FUNDA_PRICE_MIN"
-_ENV_PRICE_MAX = "FUNDA_PRICE_MAX"
-_ENV_BEDROOMS_MIN = "FUNDA_BEDROOMS_MIN"
-_ENV_LIVING_AREA_MIN = "FUNDA_LIVING_AREA_MIN"
-_ENV_PROPERTY_TYPE = "FUNDA_PROPERTY_TYPE"
-_ENV_PLOT_SIZE_MIN = "FUNDA_PLOT_SIZE_MIN"
-_ENV_ENERGY_LABEL_MIN = "FUNDA_ENERGY_LABEL_MIN"
+_FILTERS_PATH = _PROJECT_ROOT / "config" / "filters.json"
 
 # Phase 1 filter defaults (frozen Phase 2 contract).
 _PHASE1_PRICE_MIN = 550_000
@@ -37,48 +28,17 @@ _PHASE1_PRICE_MAX = 750_000
 _PHASE1_BEDROOMS_MIN = 3
 _PHASE1_LIVING_AREA_MIN = 100
 
-
-def _load_env() -> None:
-    """Load .env from the project root if present (project convention)."""
-    if _ENV_PATH.exists():
-        load_dotenv(_ENV_PATH)
-        logger.debug("Loaded .env from %s", _ENV_PATH)
-    else:
-        logger.debug("No .env file at %s; using process environment only.", _ENV_PATH)
-
-
-def _parse_int(name: str, raw: str) -> int:
-    """Parse an integer, raising a clear ValueError on invalid input."""
-    try:
-        return int(raw.strip())
-    except (TypeError, ValueError):
-        raise ValueError(
-            f"Environment variable {name} must be an integer, got {raw!r}."
-        ) from None
-
-
-def _get_int_env(name: str, default: int) -> int:
-    """Read an integer env var; missing/empty falls back to the default."""
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return _parse_int(name, raw)
-
-
-def _get_optional_int_env(name: str) -> int | None:
-    """Read an optional integer env var; missing/empty -> None."""
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return None
-    return _parse_int(name, raw)
-
-
-def _get_optional_str_env(name: str) -> str | None:
-    """Read an optional string env var; missing/empty -> None."""
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return None
-    return raw.strip()
+# Recognised keys in config/filters.json. Unknown keys are rejected so a typo
+# cannot silently fall back to the defaults.
+_FILTER_KEYS = (
+    "price_min",
+    "price_max",
+    "bedrooms_min",
+    "living_area_min",
+    "property_type",
+    "plot_size_min",
+    "energy_label_min",
+)
 
 
 @dataclass(frozen=True)
@@ -87,7 +47,7 @@ class FilterConfig:
 
     Optional preferences default to ``None``, meaning "no additional
     preference filter". Direct construction validates the values;
-    ``from_env()`` builds an instance from the environment.
+    ``from_file()`` builds an instance from ``config/filters.json``.
     """
 
     price_min: int
@@ -139,22 +99,43 @@ class FilterConfig:
             object.__setattr__(self, "energy_label_min", self.energy_label_min.strip().upper())
 
     @classmethod
-    def from_env(cls) -> "FilterConfig":
-        """Build a ``FilterConfig`` from the environment.
+    def from_file(cls, path: Path | str | None = None) -> "FilterConfig":
+        """Build a ``FilterConfig`` from the human-editable filter file.
 
-        Missing or empty required variables fall back to the Phase 1 defaults;
-        empty optional variables become ``None``. Invalid values raise
-        ``ValueError`` (never silently coerced).
+        Defaults to ``config/filters.json`` relative to the project root, so
+        execution from cron, systemd, or tmux does not depend on the process
+        working directory. Missing required keys fall back to the Phase 1
+        defaults; missing optional keys become ``None``. Unknown keys and
+        invalid values raise ``ValueError`` (never silently coerced).
         """
-        _load_env()
+        path = Path(path) if path is not None else _FILTERS_PATH
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ValueError(f"Could not read filter file {path}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Filter file {path} is not valid JSON: {exc}") from exc
+
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"Filter file {path} must contain a JSON object, got {type(raw).__name__}."
+            )
+
+        unknown = sorted(key for key in raw if key not in _FILTER_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Filter file {path} contains unknown key(s): {', '.join(unknown)}. "
+                f"Expected keys: {', '.join(_FILTER_KEYS)}."
+            )
+
         return cls(
-            price_min=_get_int_env(_ENV_PRICE_MIN, _PHASE1_PRICE_MIN),
-            price_max=_get_int_env(_ENV_PRICE_MAX, _PHASE1_PRICE_MAX),
-            bedrooms_min=_get_int_env(_ENV_BEDROOMS_MIN, _PHASE1_BEDROOMS_MIN),
-            living_area_min=_get_int_env(_ENV_LIVING_AREA_MIN, _PHASE1_LIVING_AREA_MIN),
-            property_type=_get_optional_str_env(_ENV_PROPERTY_TYPE),
-            plot_size_min=_get_optional_int_env(_ENV_PLOT_SIZE_MIN),
-            energy_label_min=_get_optional_str_env(_ENV_ENERGY_LABEL_MIN),
+            price_min=raw.get("price_min", _PHASE1_PRICE_MIN),
+            price_max=raw.get("price_max", _PHASE1_PRICE_MAX),
+            bedrooms_min=raw.get("bedrooms_min", _PHASE1_BEDROOMS_MIN),
+            living_area_min=raw.get("living_area_min", _PHASE1_LIVING_AREA_MIN),
+            property_type=raw.get("property_type"),
+            plot_size_min=raw.get("plot_size_min"),
+            energy_label_min=raw.get("energy_label_min"),
         )
 
 

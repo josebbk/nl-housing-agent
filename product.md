@@ -133,9 +133,27 @@ The confirmed Phase 1 filtering criteria are:
 * **Bedrooms:** at least 3
 * **Living area:** at least 100 m²
 
+These values are also the **Phase 2 defaults**. As of Phase 2 the filter
+values are configurable by editing the committed human-readable file
+`config/filters.json` (see `src/config.py`), but the values above remain the
+default behavior whenever a key is absent from the file. `.env` is reserved
+for secrets and is not used for filter configuration.
+
+### Optional Phase 2 preference filters
+
+Three optional preferences can be configured on top of the base filters:
+
+* **property_type** — only listings of this type match (e.g. `appartement`).
+* **plot_size_min** — minimum plot size in m².
+* **energy_label_min** — minimum energy label, G (lowest) → A++++ (highest).
+
+When a preference is unset (`null` in `config/filters.json`), it imposes no
+restriction. A listing whose optional field is NULL never satisfies an
+enabled preference filter.
+
 ### Resolution of Price Range Requirement
 
-The price range has been explicitly confirmed by the project owner as **€550,000–€750,000** for Phase 1. This range serves as the active single source of truth across all project documentation.
+The price range has been explicitly confirmed by the project owner as **€550,000–€750,000** for Phase 1. This range serves as the active single source of truth across all project documentation. As of Phase 2 the values are configurable by editing `price_min` / `price_max` in `config/filters.json`, with €550,000–€750,000 remaining the default.
 
 ---
 
@@ -337,14 +355,19 @@ Phase 1 is considered complete and ready for production monitoring when all of t
 Completed:
 
 * Detail-page scraping and preference-based scoring (Section 12a).
+* Configurable search filters (Steps 1–4): `FilterConfig` and
+  `DEFAULT_FILTERS` in `src/config.py`, loaded from the human-editable
+  `config/filters.json` file via `FilterConfig.from_file()`, applied to the
+  Funda search and the storage matching query. The Phase 1 filter values
+  remain the defaults.
 
-Potential future work:
+Remaining (not yet implemented):
 
-* configurable filters
-* more detailed property preferences
-* additional ranking/scoring refinements
+* deterministic ranking/ordering of matching listings
+* notification formatting expansions (neighborhood, property type, energy
+  label, plot size, bedrooms)
 
-Phase 2 details are not finalized.
+Phase 2 is not yet fully complete; the remaining items above are future work.
 
 ### Phase 3 — Reliability and Operations
 
@@ -396,7 +419,7 @@ The following product decisions have been confirmed and serve as project ground 
 ### Price range
 * **Status:** Confirmed.
 * **Value:** €550,000–€750,000.
-* **Notes:** Serves as the single source of truth for Phase 1 filtering logic. May be made configurable or adjusted in Phase 2.
+* **Notes:** Serves as the default single source of truth for Phase 1 filtering logic. Configurable in Phase 2 by editing `price_min` / `price_max` in `config/filters.json`; €550,000–€750,000 remains the default.
 
 ---
 

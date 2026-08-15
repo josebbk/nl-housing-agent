@@ -1,0 +1,9 @@
+{
+  "price_min": 550000,
+  "price_max": 750000,
+  "bedrooms_min": 3,
+  "living_area_min": 100,
+  "property_type": null,
+  "plot_size_min": null,
+  "energy_label_min": null
+}

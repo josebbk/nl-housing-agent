@@ -10,6 +10,7 @@ src.scraper and src.notifier modules import without third-party dependencies
 installed.
 """
 
+import json
 import os
 import sqlite3
 import sys
@@ -245,27 +246,29 @@ class MainOrchestrationTestCase(unittest.TestCase):
 
 
 class MainConfigIntegrationTestCase(unittest.TestCase):
-    """Verify FilterConfig flows from the environment through main.py.
+    """Verify FilterConfig flows from config/filters.json through main.py.
 
-    Each test starts from a clean process environment so no real .env or
-    shell variables leak in, and config._load_env() is stubbed so the
-    project's .env is never read. No real network/Telegram is used.
+    Each test writes an isolated temporary filters.json and patches
+    config._FILTERS_PATH so the real committed file and any real .env are
+    never read. No real network/Telegram is used.
     """
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self._tmp.name, "funda.db")
+        self.filters_path = Path(self._tmp.name) / "filters.json"
 
-        env_patcher = mock.patch.dict(os.environ, {}, clear=True)
-        env_patcher.start()
-        self.addCleanup(env_patcher.stop)
+        path_patcher = mock.patch.object(config, "_FILTERS_PATH", self.filters_path)
+        path_patcher.start()
+        self.addCleanup(path_patcher.stop)
 
-        load_patcher = mock.patch.object(config, "_load_env")
-        load_patcher.start()
-        self.addCleanup(load_patcher.stop)
+        self.write_filters({})
 
     def tearDown(self):
         self._tmp.cleanup()
+
+    def write_filters(self, values):
+        self.filters_path.write_text(json.dumps(values), encoding="utf-8")
 
     def test_default_config_passes_phase1_values_to_scraper(self):
         captured = {}
@@ -284,10 +287,12 @@ class MainConfigIntegrationTestCase(unittest.TestCase):
         self.assertEqual(captured["floor_area_min"], 100)
 
     def test_custom_config_passes_values_to_scraper(self):
-        os.environ["FUNDA_PRICE_MIN"] = "600000"
-        os.environ["FUNDA_PRICE_MAX"] = "700000"
-        os.environ["FUNDA_BEDROOMS_MIN"] = "4"
-        os.environ["FUNDA_LIVING_AREA_MIN"] = "120"
+        self.write_filters({
+            "price_min": 600000,
+            "price_max": 700000,
+            "bedrooms_min": 4,
+            "living_area_min": 120,
+        })
 
         captured = {}
 
@@ -305,10 +310,12 @@ class MainConfigIntegrationTestCase(unittest.TestCase):
         self.assertEqual(captured["floor_area_min"], 120)
 
     def test_same_filterconfig_passed_to_storage(self):
-        os.environ["FUNDA_PRICE_MIN"] = "600000"
-        os.environ["FUNDA_PRICE_MAX"] = "700000"
-        os.environ["FUNDA_BEDROOMS_MIN"] = "4"
-        os.environ["FUNDA_LIVING_AREA_MIN"] = "120"
+        self.write_filters({
+            "price_min": 600000,
+            "price_max": 700000,
+            "bedrooms_min": 4,
+            "living_area_min": 120,
+        })
 
         captured = {}
 
@@ -323,16 +330,18 @@ class MainConfigIntegrationTestCase(unittest.TestCase):
             run_main([], self.db)
 
         self.assertIsInstance(captured["filters"], FilterConfig)
-        self.assertEqual(captured["filters"], FilterConfig.from_env())
+        self.assertEqual(captured["filters"], FilterConfig.from_file())
         self.assertEqual(captured["filters"].price_min, 600000)
         self.assertEqual(captured["filters"].price_max, 700000)
         self.assertEqual(captured["filters"].bedrooms_min, 4)
         self.assertEqual(captured["filters"].living_area_min, 120)
 
     def test_optional_preferences_go_to_storage_not_scraper(self):
-        os.environ["FUNDA_PROPERTY_TYPE"] = "appartement"
-        os.environ["FUNDA_PLOT_SIZE_MIN"] = "50"
-        os.environ["FUNDA_ENERGY_LABEL_MIN"] = "B"
+        self.write_filters({
+            "property_type": "appartement",
+            "plot_size_min": 50,
+            "energy_label_min": "B",
+        })
 
         captured_scrape = {}
         captured_filters = {}

@@ -465,6 +465,11 @@ A `.env.example` containing placeholders should be committed.
 
 Never print or commit actual Telegram tokens.
 
+User-editable housing search filters are configured in `config/filters.json`
+(loaded by `src/config.py` via `FilterConfig.from_file()`), not in `.env`.
+`.env` is reserved for secrets and environment-specific sensitive values such
+as Telegram credentials.
+
 ---
 
 ## Working Principles

@@ -138,12 +138,44 @@ Do not install project dependencies globally.
 
 Secrets are stored in a `.env` file at the project root.
 
-Expected variables:
+Expected secret variables:
 
 ```text
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+TELEGRAM_FAILURE_TOPIC_ID=
 ```
+
+`.env` is reserved for secrets and environment-specific sensitive values
+(such as Telegram credentials). Search filters are **not** configured here.
+
+### Search filter configuration (`config/filters.json`)
+
+The owner changes normal property-search filters by editing the committed,
+human-editable JSON file:
+
+```text
+config/filters.json
+```
+
+Its keys control the housing search criteria:
+
+| Key                | Type       | Default | Meaning                                     |
+| ------------------ | ---------- | ------- | ------------------------------------------- |
+| `price_min`        | int        | 550000  | Minimum asking price (€)                    |
+| `price_max`        | int        | 750000  | Maximum asking price (€)                    |
+| `bedrooms_min`     | int        | 3       | Minimum bedrooms                            |
+| `living_area_min`  | int        | 100     | Minimum living area (m²)                    |
+| `property_type`    | str / null | none    | Required property type, e.g. `appartement`  |
+| `plot_size_min`    | int / null | none    | Minimum plot size (m²)                      |
+| `energy_label_min` | str / null | none    | Minimum energy label, e.g. `B`              |
+
+The `null` optional values mean "no preference filter". Missing keys fall
+back to the Phase 1 defaults (€550,000–€750,000, ≥3 bedrooms, ≥100 m²).
+Invalid values or unknown keys cause the run to fail loudly rather than being
+silently coerced. The file is resolved from the project root regardless of the
+working directory, so cron/systemd/tmux execution finds it automatically. See
+`src/config.py` for the authoritative key list and validation rules.
 
 The real `.env` file must never be committed to Git.
 
@@ -162,6 +194,7 @@ Example:
 ```text
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+TELEGRAM_FAILURE_TOPIC_ID=
 ```
 
 Never print the Telegram bot token in logs or terminal output.

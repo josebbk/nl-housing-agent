@@ -46,10 +46,10 @@ def main() -> None:
     dry_run = args.dry_run
     db_path = args.db_path
 
-    # Load search filters from the environment (FUNDA_* vars via .env).
-    # This is the single source of truth for filter values, shared by the
-    # scraper call and the storage matching query below.
-    filters = FilterConfig.from_env()
+    # Load search filters from the human-editable filter file
+    # (config/filters.json). This is the single source of truth for filter
+    # values, shared by the scraper call and the storage matching query below.
+    filters = FilterConfig.from_file()
 
     # --- Logging setup ---
     log_dir = Path(__file__).resolve().parent.parent / "logs"

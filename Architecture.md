@@ -6,7 +6,10 @@ A Python-based scraper that runs periodically, extracts current for-sale
 Amsterdam listings from Funda using Playwright, detects listings not seen
 before, stores them in SQLite, applies the confirmed Phase 1 property filters
 (€550,000–€750,000 asking price, ≥3 bedrooms, ≥100 m² living area), and sends
-Telegram notifications for newly detected matching listings.
+Telegram notifications for newly detected matching listings. As of Phase 2 the
+filter values are configurable by editing `config/filters.json` (see
+"Phase 2 — Configurable Search Filters"), with the Phase 1 values above
+as the defaults.
 
 The product-level requirements are defined in `product.md`.
 
@@ -234,17 +237,156 @@ available.
 
 ---
 
+## Phase 2 — Configurable Search Filters
+
+Phase 2 makes the search filter criteria configurable at runtime while
+preserving the Phase 1 behavior as the default. The owner edits a single
+human-readable JSON file — `config/filters.json` — instead of `.env`. The
+frozen contract is implemented across four files: `config/filters.json`
+(user-editable values), `src/config.py` (single source of truth for filter
+defaults and loading), `src/storage.py` (applies the filters in the matching
+query), and `src/main.py` (loads and threads the configuration through the
+run).
+
+```text
+config/filters.json
+        ↓
+src/config.py   (FilterConfig.from_file)
+        ↓
+src/main.py
+        ↓
+src/scraper.py / src/storage.py
+```
+
+`.env` is reserved for secrets and environment-specific sensitive values
+(Telegram credentials) and is no longer used for search filters.
+
+### `config/filters.json` — user-editable filter file
+
+The default file is committed with the Phase 1 values:
+
+```json
+{
+  "price_min": 550000,
+  "price_max": 750000,
+  "bedrooms_min": 3,
+  "living_area_min": 100,
+  "property_type": null,
+  "plot_size_min": null,
+  "energy_label_min": null
+}
+```
+
+| Key               | Type       | Default | Meaning                                     |
+| ----------------- | ---------- | ------- | ------------------------------------------- |
+| `price_min`       | int        | 550000  | Minimum asking price (€)                    |
+| `price_max`       | int        | 750000  | Maximum asking price (€)                    |
+| `bedrooms_min`    | int        | 3       | Minimum bedrooms                            |
+| `living_area_min` | int        | 100     | Minimum living area (m²)                    |
+| `property_type`   | str / null | none    | Required property type, e.g. `appartement`  |
+| `plot_size_min`   | int / null | none    | Minimum plot size (m²)                      |
+| `energy_label_min`| str / null | none    | Minimum energy label, e.g. `B`              |
+
+The `null` optional values mean "no preference filter". Missing keys fall
+back to the defaults shown above. Unknown keys are rejected so a typo cannot
+silently change behavior.
+
+### `src/config.py` — FilterConfig
+
+```python
+@dataclass(frozen=True)
+class FilterConfig:
+    price_min: int
+    price_max: int
+    bedrooms_min: int
+    living_area_min: int
+    property_type: str | None = None
+    plot_size_min: int | None = None
+    energy_label_min: str | None = None
+```
+
+* `FilterConfig` is immutable (`frozen=True`); validation runs at
+  construction in `__post_init__`.
+* `DEFAULT_FILTERS` is a module-level `FilterConfig` holding the Phase 1
+  defaults (`price_min=550000`, `price_max=750000`, `bedrooms_min=3`,
+  `living_area_min=100`, all optional preferences `None`). It is the single
+  source of truth for filter defaults.
+* `FilterConfig.from_file()` loads `config/filters.json` from a
+  project-root-relative path, so execution from cron, systemd, or tmux does
+  not depend on the process working directory. Missing required keys fall
+  back to the Phase 1 defaults; missing optional keys become `None`; unknown
+  keys and invalid values raise a clear `ValueError` rather than being
+  silently coerced.
+
+Validation rules:
+
+* integer fields must be integers (floats and booleans rejected); invalid
+  values raise `ValueError`
+* `price_min <= price_max`
+* numeric minimums (`price_min`, `bedrooms_min`, `living_area_min`,
+  `plot_size_min`) must be non-negative
+* `property_type`, when set, must be a non-empty string
+* `energy_label_min`, when set, must be a non-empty string and is normalized
+  to uppercase (e.g. `b` → `B`), following the `scoring.py` convention
+* the file must be a JSON object; invalid JSON or an unreadable/missing file
+  raises `ValueError`
+
+### `src/storage.py` — parameterized matching query
+
+```python
+fetch_unnotified_matching_listings(
+    db_path: Path | str = DEFAULT_DB_PATH,
+    filters: FilterConfig = DEFAULT_FILTERS,
+) -> list[dict]
+```
+
+* The signature is backward compatible — existing callers that pass only
+  `db_path` keep the Phase 1 behavior via `DEFAULT_FILTERS`.
+* The base conditions are always applied: `notified = 0`, price within
+  `[price_min, price_max]`, `bedrooms >= bedrooms_min`, and
+  `living_area_m2 >= living_area_min`.
+* Optional preferences are applied only when not `None`:
+  * `property_type` → `property_type = ?` (exact match)
+  * `plot_size_min` → `plot_size_m2 >= ?`
+  * `energy_label_min` → `UPPER(energy_label) IN (…)` where the accepted set
+    is every label at least as good as the minimum on the project
+    energy-label scale (`config/preferences.json` → `energy_label_scale`,
+    `["G","F","E","D","C","B","A","A+","A++","A+++","A++++"]`, worst → best).
+    A configured minimum that is not on the scale raises `ValueError`.
+* NULL semantics: a listing with a NULL value for an optional field never
+  satisfies an enabled preference filter (standard SQL comparison).
+
+### `src/main.py` — orchestration integration
+
+* `main()` loads `filters = FilterConfig.from_file()` once at run start.
+* The configured `price_min`, `price_max`, `living_area_min`, and
+  `bedrooms_min` are passed to `scrape_funda(...)`.
+* The same `filters` object is passed to
+  `fetch_unnotified_matching_listings(db_path, filters=filters)`, so the
+  storage query uses exactly the loaded configuration.
+* The optional preferences (`property_type`, `plot_size_min`,
+  `energy_label_min`) are storage-level filters and are **not** passed to
+  `scrape_funda()`, which does not accept those parameters.
+* All Phase 1 orchestration (init_db, insert, notify, mark-as-notified,
+  dry-run, exit codes, logging) is unchanged.
+
+---
+
 ## Phase 1 Filtering Criteria
 
-The confirmed Phase 1 filtering criteria serve as the single source of truth across all project documentation:
+The confirmed Phase 1 filtering criteria serve as the default source of truth for filter defaults across all project documentation:
 
 * **Price:** €550,000–€750,000 (Confirmed)
 * **Bedrooms:** ≥3
 * **Living area:** ≥100 m²
 
+These values are also the Phase 2 defaults (`DEFAULT_FILTERS` in
+`src/config.py` and the committed `config/filters.json`) and remain in effect
+whenever a filter key is absent from the filter file.
+
 ### Resolution of Legacy Requirements
 
-The price range has been explicitly confirmed as **€550,000–€750,000** by the project owner. The scraper implementation must strictly enforce this range.
+The price range has been explicitly confirmed as **€550,000–€750,000** by the project owner. This range remains the default scraper behavior, configurable by editing `price_min` / `price_max` in `config/filters.json`.
 
 ---
 
@@ -500,6 +642,7 @@ project-root/
 │   └── site-notes/
 │       └── funda.md
 ├── src/
+│   ├── config.py
 │   ├── scraper.py
 │   ├── storage.py
 │   ├── notifier.py
@@ -595,16 +738,19 @@ specific technical need is demonstrated and the dependency is approved.
 The exact logging destination, rotation, and failure-monitoring mechanism
 remain an `operations.md` decision.
 
-### 4. Phase 2 filter configuration
+### 4. Phase 2 filter configuration — RESOLVED
 
-A configurable filter system is deferred until Phase 2.
+Filter thresholds are now configurable by editing `config/filters.json`,
+loaded via `src/config.py` (`FilterConfig`, `DEFAULT_FILTERS`,
+`FilterConfig.from_file()`), with the Phase 1 values preserved as defaults
+(see "Phase 2 — Configurable Search Filters" above). No configuration
+framework or new dependency was introduced; `.env` remains reserved for
+secrets.
 
-Do not build a complex configuration framework prematurely.
-
-*Note:* Ranking/scoring configuration is now resolved via
-`config/preferences.json` (see Section 4a below). This is distinct from
-the Phase 2 filter-threshold configuration, which remains an open item
-for a future task. Do not conflate the two.
+*Note:* Ranking/scoring configuration is resolved via
+`config/preferences.json` (see "Phase 2 — Detail-Page Scraping & Scoring"
+above). This is distinct from the filter-threshold configuration. Do not
+conflate the two.
 
 ### 5. Scheduling evolution
 
