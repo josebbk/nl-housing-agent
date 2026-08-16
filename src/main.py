@@ -227,20 +227,22 @@ def main() -> None:
     for listing in matching:
         try:
             detail = fetch_listing_details(listing["url"])
-            # Merge card-scraped data (price, living_area_m2, bedrooms, etc.)
-            # into the detail dict so scoring has access to all fields.
-            detail.update(listing)
-            result = score_listing(detail, preferences, filters)
-
-            # Merge detail fields + score into the listing dict for storage
+            # Merge detail fields into listing so scoring has access to all
+            # fields (price, living_area_m2, bedrooms, ownership_type, etc.).
+            # Must do listing.update(detail) BEFORE detail.update(listing)
+            # because listing (from DB row) has phase2 columns that are NULL,
+            # and detail.update(listing) would overwrite scraped values with
+            # those NULLs.
             listing.update(detail)
+            result = score_listing(listing, preferences, filters)
+
+            # Persist detail fields + score to the database row
             if result.score is not None:
                 listing["score"] = result.score
             if result.breakdown:
                 listing["score_breakdown"] = json.dumps(result.breakdown)
             listing["score_confidence"] = result.confidence
 
-            # Persist detail fields + score to the database row
             insert_listing(listing, db_path)
 
             scored_listings.append(listing)
@@ -417,19 +419,17 @@ def _run_backfill(db_path: str, filters: FilterConfig, dry_run: bool, run_start:
         address = listing.get("address", "?")
         try:
             detail = fetch_listing_details(listing["url"])
-            # Merge card-scraped data into the detail dict for scoring
-            detail.update(listing)
-            result = score_listing(detail, preferences, filters)
-
-            # Merge detail fields + score into the listing dict for storage
+            # Merge detail fields into listing so scoring has access to all
+            # fields. Same ordering fix as the main run above.
             listing.update(detail)
+            result = score_listing(listing, preferences, filters)
+
+            # Persist detail fields + score to the database row
             if result.score is not None:
                 listing["score"] = result.score
             if result.breakdown:
                 listing["score_breakdown"] = json.dumps(result.breakdown)
             listing["score_confidence"] = result.confidence
-
-            # Persist detail fields + score to the database row
             insert_listing(listing, db_path)
 
             backfilled += 1
@@ -616,10 +616,10 @@ def _run_seed(db_path: str, filters: FilterConfig, run_start: datetime) -> None:
     for listing in matching:
         try:
             detail = fetch_listing_details(listing["url"])
-            detail.update(listing)
-            result = score_listing(detail, preferences, filters)
-
+            # Merge detail fields into listing so scoring has access to all
+            # fields. Same ordering fix as the main run above.
             listing.update(detail)
+            result = score_listing(listing, preferences, filters)
             if result.score is not None:
                 listing["score"] = result.score
             if result.breakdown:
