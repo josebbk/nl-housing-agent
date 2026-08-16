@@ -9,6 +9,223 @@ be known.
 
 (newest entries at the top)
 
+### 2026-08-16 — Amenities extraction removed from codebase
+
+The amenities (`Voorzieningen`) extraction and scoring logic has been
+removed from the codebase entirely. The entries below this one document
+the historical debugging work that was done on the amenities extraction
+logic. They are preserved as historical/reference only — they describe
+site structure knowledge that is still true, but the extraction code
+that depended on them no longer exists.
+
+### 2026-08-16 — Amenities matched always empty in scoring
+
+- **Symptom:** `amenities_raw` was being scraped correctly from the detail
+  page, but `amenities_matched` in the scoring output was always an empty
+  list. The `_score_amenities()` function in `scoring.py` returned a score
+  of 0.0 for all listings because no keywords matched.
+
+- **Diagnosis:** The root cause was in `detail_scraper.py`'s `fetch_listing_details()`.
+  The "Voorzieningen" field value was being extracted from the wrong location
+  within the "Indeling" subsection. The extraction regex was capturing text
+  that did not start with an amenity keyword, resulting in raw text that
+  couldn't match the tracked keyword dictionary in `preferences.json`. The fix
+  (already in place from prior work) added amenity-keyword filtering: only
+  matches where the value after "Voorzieningen" starts with a known amenity
+  keyword (airconditioning, glasvezelkabel, alarminstallatie, etc.) are
+  accepted as the correct field value.
+
+- **Fix:** The `amenities_raw` extraction in `fetch_listing_details()` now:
+  1. Finds all "Voorzieningen" (capital V) not preceded by "Badkamer" in the
+     Indeling subsection.
+  2. Takes the last match where the value starts with a known amenity keyword.
+  3. Extracts the value until the next field boundary or end of section.
+
+- **Verification:** Confirmed by fetching all 4 reference URLs fresh:
+  - Amsterdam (Hilversumstraat 60): matched 4/4 keywords
+  - Mill (Mergen 20): matched 3/3 keywords
+  - Wijchen (Zevendreef 3079): matched 2/2 keywords
+  - Aalsmeer (Zeeltstraat 19): matched 3/3 keywords, "dakraam" correctly NOT matched
+
+- **Pattern/Warning:** The "Voorzieningen" label appears multiple times on
+  Funda detail pages with different meanings. Always scope extraction to the
+  "Indeling" subsection and validate that the captured value starts with a
+  known amenity keyword. The `_score_amenities()` function in `scoring.py`
+  is correct — it does substring matching against `amenities_tracked` from
+  `preferences.json`. The bug was entirely in the data extraction layer, not
+  the scoring layer.
+
+### 2026-08-15 — Detail page field extraction: no-separator format, subsection parsing, duplicate text
+
+- **Symptom:** After fixing energy_label/Voorzieningen/garden_size bugs, many
+  fields still returned wrong values or None: property_type, year_built, status,
+  plot_size_m2, garden_type, garden_orientation, insulation_raw, heating_type,
+  boiler_year, amenities_raw, garage_type, parking_type, building_bound_outdoor_m2,
+  erfpacht_canon_annual.
+
+- **Diagnosis:**
+  1. **No-separator format:** Funda's rendered text has NO separator between
+     field names and values (e.g., "Bouwjaar1969", "StatusBeschikbaar").
+     The previous `_extract_field_value()` function looked for `:` or `-`
+     separators which never matched. Fixed by adding `_extract_field_until_next()`
+     that handles both newline-separated and concatenated formats.
+  2. **Duplicate text:** Funda's rendered text contains duplicate content:
+     a concatenated block followed by a newline-separated block with the same
+     data. Extraction functions had to handle both formats, preferring the
+     newline-separated format for reliability.
+  3. **Section splitting:** The `_split_sections()` function splits by lines
+     matching known section headings. But section headings in Funda's text
+     often appear without spaces between them (e.g., "KenmerkenOverdracht...").
+     Added `_split_concatenated_sections()` as fallback.
+  4. **Subsection parsing:** Kenmerken contains subsections (Overdracht, Bouw,
+     Energie, etc.) that are concatenated without separators. The
+     `_split_kenmerken_subsections()` function finds subsection headings using
+     regex, but field names like "Soort garage" contain "garage" as a substring,
+     causing false matches. Fixed by deduplicating subsections (keeping only
+     the first occurrence of each).
+  5. **Word boundary issues:** Regex patterns using `(?<!\w)` and `(?!\w)`
+     failed because subsection headings are preceded/followed by word chars
+     in concatenated text (e.g., "achteromGarageSoort"). Removed word-boundary
+     assertions from subsection parsing.
+  6. **Re.escape escaping spaces/hyphens:** `re.escape("Warm water")` escaped
+     the space, breaking pattern matching. Fixed by not using re.escape for
+     next_fields in boundary detection.
+  7. **Missing end-of-string boundary:** `_extract_field_until_next()` with
+     next_fields failed when the value didn't end with a known field name
+     (e.g., "Soort garageCarport" where "Carport" is not in next_fields).
+     Added `$` as a fallback boundary.
+  8. **"Buitenruimte" in "Gebouwgebonden buitenruimte":** The subsection
+     regex matched "buitenruimte" inside "Gebouwgebonden buitenruimte",
+     truncating the "Oppervlakten en inhoud" subsection body. Added a filter
+     to skip "buitenruimte" matches preceded by "gebouwgebonden".
+  9. **"Voorzieningen" false matches:** The Indeling subsection contains
+     "Badkamervoorzieningen" (substring match) and free-text "voorzieningen"
+     (lowercase in descriptions like "dagelijkse voorzieningen"). The actual
+     field is "Voorzieningen" (capital V) not preceded by "Badkamer", and
+     its value always starts with an amenity keyword. Added filtering to
+     find the correct match.
+
+- **Fix:**
+  1. Added `_extract_field_until_next()` with three strategies: newline-separated
+     format, concatenated format with boundary-aware capture, and simple
+     newline termination. Takes first line only to handle duplicate content.
+  2. Rewrote `_split_sections()` to handle both newline-separated and
+     concatenated sections.
+  3. Rewrote `_split_kenmerken_subsections()` with deduplication to handle
+     substring matches (e.g., "garage" in "Soort garage").
+  4. Added extractors for missing fields: property_type, year_built, status,
+     plot_size_m2, garden_orientation (compass extraction), boiler_year (from
+     Energie section's last Cv-ketel occurrence).
+  5. Fixed insulation_raw to handle bodies that start directly with the value
+     (no "Isolatie" prefix).
+  6. Fixed garden_orientation to extract just the Dutch compass direction
+     (zuiden, noordwesten, etc.) from the description.
+  7. Added `$` fallback boundary to `_extract_field_until_next()` so
+     non-greedy capture doesn't fail when no next_field is found.
+  8. Added filter in `_split_kenmerken_subsections()` to skip "buitenruimte"
+     when preceded by "gebouwgebonden".
+  9. Added amenity-keyword filtering for Voorzieningen extraction to skip
+     false matches in free text and "Badkamervoorzieningen".
+
+- **Pattern/Warning:** Funda's detail page text has a dual format: a concatenated
+  block (no separators) followed by a newline-separated block (duplicates).
+  Always prefer the newline-separated format for field extraction. When that
+  fails, fall back to the concatenated format with boundary-aware capture.
+  Subsection headings may be substrings of field names — always deduplicate
+  by keeping only the first occurrence of each heading. When extracting fields
+  that share labels across subsections (e.g., "Voorzieningen"), use content
+  heuristics (e.g., "value starts with amenity keyword") to distinguish the
+  correct source.
+
+### 2026-08-15 — Multiple field-location bugs: energy_label, Voorzieningen reuse, garden size dynamic labels, neighborhood price outside Kenmerken
+
+- **Symptom:** `energy_label` returned garbage values like "114 m²wonen" instead of grade letters (A-G).
+  `amenities_matched` was empty because Voorzieningen was being read from the wrong subsection.
+  Garden size extraction failed when the size field label was dynamic (matched the garden type value).
+  `neighborhood_avg_price_m2` was never found because it lives outside the Kenmerken container.
+
+- **Diagnosis:**
+  1. **energy_label:** The "Energielabel" field lives inside the **"Energie"** subsection
+     of Kenmerken (siblings: Isolatie, Verwarming, Warm water, Cv-ketel). The previous code
+     searched the entire page text and matched "energielabel" in the compact icon-stat row near
+     the top (where it appears as "Cenergielabel" with no label prefix), capturing unrelated text.
+     The Energie section uses "FieldnameValue" format with **no separator** (e.g.
+     "EnergielabelCIsolatieDakisolatie..."), so `_extract_field_value()` (which looks for `:` or `-`)
+     never found it. The fix uses a regex matching "Energielabel" followed immediately by a grade
+     letter pattern `[A-G][+]*`.
+  2. **Voorzieningen reuse confirmed third location:** "Voorzieningen" appears in THREE subsections:
+     - **"Indeling"** (correct source: living amenities like airconditioning, TV kabel, etc.)
+     - **"Garage"** (wrong: electricity/water hookups for garage)
+     - **"Bergruimte"** (wrong: "Elektra" — shed utilities, different meaning entirely)
+     The fix scopes positively to "must be inside Indeling" rather than hardcoding exclusions.
+  3. **Garden size dynamic labels:** The "Tuin" field's value (e.g. "Achtertuin") becomes the
+     label of the next field holding the size (e.g. "Achtertuin: 76 m² (8,00 meter diep en 9,54 meter breed)").
+     The size field label is NOT a fixed string like "Tuingrootte". The fix extracts the garden
+     type first, then uses it as a dynamic regex pattern to find the size.
+  4. **neighborhood_avg_price_m2:** "Gem. vraagprijs / m²" is in the **"Buurt"** section, which is
+     a top-level page section OUTSIDE the Kenmerken container entirely (a sibling to Kenmerken).
+     If extraction is scoped to only search inside Kenmerken, it will never find this field.
+     The code correctly reads from the "Buurt" section via `_find_section(sections, "Buurt")`.
+
+- **Fix:**
+  1. Added `energy_label` field to `DetailData`. Added `_extract_energy_label()` that uses
+     `re.search(r"Energielabel\s*([A-G][+]*)", body)` to handle the no-separator format.
+     Extracted from the "Energie" subsection via `_find_section(sections, "Energie")`.
+  2. Voorzieningen extraction already scoped to "Indeling" subsection in prior uncommitted changes.
+  3. Rewrote `_extract_garden()` to first extract the garden type, then use it as a dynamic
+     regex pattern to find the size field. Falls back to generic "Tuin" and "grootte" patterns.
+  4. Confirmed `neighborhood_avg_price_m2` extraction already correctly reads from "Buurt" section.
+
+- **Pattern/Warning / Field Location Reference Table:**
+
+  | Field | Kenmerken Subsection | Notes |
+  |-------|---------------------|-------|
+  | Energielabel | **Energie** | No colon separator; use regex `[A-G][+]*` after "Energielabel" |
+  | Isolatie | Energie | Sibling of Energielabel |
+  | Verwarming | Energie | Sibling of Energielabel |
+  | Cv-ketel | Energie | Sibling of Energielabel |
+  | Warm water | Energie | Sibling of Energielabel |
+  | Bouwjaar | **Bouw** | Separate subsection |
+  | Eigendomssituatie | **Kadastrale gegevens** | Separate subsection |
+  | Voorzieningen | **Indeling** | Label REUSED in "Garage" and "Bergruimte" with different meanings — always scope to Indeling |
+  | Aantal kamers | Indeling | Sibling of Voorzieningen |
+  | Aantal badkamers | Kenmerken (top-level) | Not in a subsection |
+  | Gem. vraagprijs / m² | **Buurt** | Outside Kenmerken entirely — top-level page section |
+
+### 2026-08-15 — "Voorzieningen" label reused across multiple Kenmerken subsections
+
+- **Symptom:** `amenities_raw` was being sourced from the free-text
+  "Omschrijving" description block instead of a structured field.
+  `amenities_matched` always came back empty because prose text doesn't
+  cleanly match the keyword dictionary.
+
+- **Diagnosis:** The label "Voorzieningen" appears **twice** on a Funda
+  detail page within the Kenmerken section:
+  1. Under **"Indeling"** (siblings: Aantal kamers, Aantal badkamers,
+     Aantal woonlagen) — this is the correct source: living-space amenities
+     like airconditioning, alarminstallatie, buitenzonwering, TV kabel, etc.
+  2. Under **"Garage"** (siblings: Soort garage, Capaciteit) — this refers
+     to garage electricity/water hookups, unrelated to the amenities we track.
+  Additionally, "Voorzieningen" can appear in the "Omschrijving" free-text
+  description block, which is prose and doesn't match the keyword dictionary.
+  The previous extraction code used `_find_text_block(text, "Voorzieningen")`
+  which searched the entire page text and could land in any of these locations.
+
+- **Fix:** Changed `fetch_listing_details()` in `detail_scraper.py` to
+  specifically target the "Indeling" subsection and extract "Voorzieningen"
+  from within it only. Added "indeling" to the known section headings in
+  both `_split_sections()` and `_find_text_block()`. The extraction now:
+  1. Finds the "Indeling" section body.
+  2. Extracts the "Voorzieningen" field value from within that body.
+  Never reads from "Omschrijving" or the "Garage" subsection.
+
+- **Pattern/Warning:** Funda reuses field labels across different subsections
+  within the same parent section (Kenmerken). The same label can appear
+  multiple times with different meanings depending on which subsection it's
+  in. When extracting fields, always scope to the specific subsection
+  container rather than searching the entire page text. This applies not just
+  to "Voorzieningen" but potentially to any field label that might be reused.
+
 ### 2026-08-13 — Near-total field-extraction failure on listing cards
 
 - **Symptom:** The scraper was discarding ~75 of 76 listings because price,
