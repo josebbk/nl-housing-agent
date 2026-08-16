@@ -73,12 +73,15 @@ class DetailData:
     insulation_score: Optional[float] = None
     heating_type: Optional[str] = None
     boiler_year: Optional[int] = None
-    amenities_raw: Optional[str] = None
-    amenities_matched: list = field(default_factory=list)
     bathrooms: Optional[int] = None
     neighborhood_avg_price_m2: Optional[float] = None
     detail_fetched_at: Optional[str] = None
     rooms: Optional[int] = None
+    energy_label: Optional[str] = None
+    property_type: Optional[str] = None
+    year_built: Optional[int] = None
+    status: Optional[str] = None
+    plot_size_m2: Optional[int] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -119,41 +122,48 @@ def _extract_page_text(page: Page) -> str:
 # Section parsing helpers
 # ---------------------------------------------------------------------------
 
+# Known top-level section headings on Funda detail pages
+_TOP_LEVEL_SECTIONS = {
+    "kenmerken", "buitenruimte", "isolatie",
+    "garage en parkeergelegenheid", "energie", "buurt",
+    "locatie", "indeling",
+}
+
+# Known subsection headings within Kenmerken
+_KENMERKEN_SUBSECTIONS = {
+    "overdracht", "bouw", "specifiek", "oppervlakten en inhoud",
+    "indeling", "energie", "kadastrale gegevens", "buitenruimte",
+    "garage", "parkeergelegenheid", "bergruimte",
+}
+
+
 def _split_sections(text: str) -> list[tuple[str, str]]:
     """Split page text into (section_heading, section_body) tuples.
 
     Funda detail pages are organized into sections with headings like
     "Kenmerken", "Buitenruimte", "Voorzieningen", etc.
+
+    Handles both newline-separated sections and concatenated text where
+    section headings appear without spaces between them.
     """
     sections = []
     current_heading = ""
     current_body_lines = []
 
-    # Known section headings on Funda detail pages
-    known_sections = {
-        "kenmerken", "buitenruimte", "voorzieningen", "isolatie",
-        "garage en parkeergelegenheid", "energie", "buurt",
-        " Kadastrale gegevens", " Kadastraal", "locatie",
-    }
+    # First, try splitting by actual newlines
+    lines = text.split("\n")
 
-    for line in text.split("\n"):
+    for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
 
-        # Check if this line looks like a section heading
-        # Section headings are typically standalone lines that match known sections
+        # Check if this line is a standalone section heading
         is_heading = False
-        for section in known_sections:
-            if stripped.lower().replace("  ", " ") == section.lower().replace("  ", " "):
+        for section in _TOP_LEVEL_SECTIONS:
+            if stripped.lower() == section.lower():
                 is_heading = True
                 break
-
-        # Also check for lines that are short and followed by key-value pairs
-        if not is_heading and len(stripped) < 50 and ":" not in stripped:
-            # Could be a heading if it's short and doesn't contain ":"
-            # (key-value pairs contain ":")
-            pass
 
         if is_heading:
             if current_heading:
@@ -166,13 +176,128 @@ def _split_sections(text: str) -> list[tuple[str, str]]:
     if current_heading:
         sections.append((current_heading, "\n".join(current_body_lines)))
 
+    # If no sections were found (text is all concatenated without newlines),
+    # try to split by known section headings embedded in the text
+    if not sections and text:
+        sections = _split_concatenated_sections(text)
+
     return sections
+
+
+def _split_concatenated_sections(text: str) -> list[tuple[str, str]]:
+    """Split text where section headings are concatenated without spaces.
+
+    E.g., "KenmerkenOverdrachtAangeboden..." splits into:
+    ("Kenmerken", "OverdrachtAangeboden...")
+    ("Overdracht", "Aangeboden...")
+    """
+    sections = []
+    # Sort sections by length (longest first) to match "oppervlakten en inhoud"
+    # before "oppervlakten"
+    sorted_sections = sorted(_TOP_LEVEL_SECTIONS, key=len, reverse=True)
+
+    # Find all heading positions
+    heading_positions = []
+    for section in sorted_sections:
+        pattern = re.compile(
+            r'(?i)(?<!\w)' + re.escape(section) + r'(?!\w)'
+        )
+        for m in pattern.finditer(text):
+            heading_positions.append((m.start(), section))
+
+    # Sort by position
+    heading_positions.sort(key=lambda x: x[0])
+
+    if not heading_positions:
+        return []
+
+    # Extract sections between heading positions
+    for i, (pos, heading) in enumerate(heading_positions):
+        if i + 1 < len(heading_positions):
+            next_pos = heading_positions[i + 1][0]
+            body = text[pos + len(heading):next_pos]
+        else:
+            body = text[pos + len(heading):]
+        sections.append((heading, body.strip()))
+
+    return sections
+
+
+def _split_kenmerken_subsections(body: str) -> list[tuple[str, str]]:
+    """Split Kenmerken body into subsections.
+
+    Kenmerken contains subsections like "Overdracht", "Bouw", "Energie", etc.
+    These appear as headings within the Kenmerken text, often concatenated
+    with the previous field value (no separator).
+    """
+    if not body:
+        return []
+
+    # Sort by length (longest first) to match multi-word sections first
+    sorted_subsections = sorted(_KENMERKEN_SUBSECTIONS, key=len, reverse=True)
+
+    heading_positions = []
+    for subsection in sorted_subsections:
+        # No word-boundary assertions — subsections may be embedded in
+        # concatenated text (e.g., "achteromGarageSoort" or "erfpachtBuitenruimte")
+        pattern = re.compile(
+            r'(?i)' + re.escape(subsection),
+        )
+        for m in pattern.finditer(body):
+            # Special case: skip "buitenruimte" when it's part of
+            # "gebouwgebonden buitenruimte" (not a subsection heading)
+            if subsection == "buitenruimte":
+                start = m.start()
+                # Check if preceded by "gebouwgebonden" (case-insensitive)
+                preceding = body[max(0, start - 20):start].lower()
+                if "gebouwgebonden" in preceding:
+                    continue
+            heading_positions.append((m.start(), subsection))
+
+    heading_positions.sort(key=lambda x: x[0])
+
+    if not heading_positions:
+        return []
+
+    # Deduplicate: keep only the first occurrence of each subsection name
+    seen = set()
+    unique_positions = []
+    for pos, heading in heading_positions:
+        if heading not in seen:
+            seen.add(heading)
+            unique_positions.append((pos, heading))
+
+    subsections = []
+    for i, (pos, heading) in enumerate(unique_positions):
+        if i + 1 < len(unique_positions):
+            next_pos = unique_positions[i + 1][0]
+            subsection_body = body[pos + len(heading):next_pos]
+        else:
+            subsection_body = body[pos + len(heading):]
+        subsections.append((heading, subsection_body.strip()))
+
+    return subsections
 
 
 def _find_section(sections: list[tuple[str, str]], keyword: str) -> Optional[str]:
     """Find a section body by keyword matching the heading."""
     for heading, body in sections:
         if keyword.lower() in heading.lower():
+            return body
+    return None
+
+
+def _find_section_body(
+    sections: list[tuple[str, str]], keyword: str
+) -> Optional[str]:
+    """Find a section body by keyword matching the heading.
+
+    Returns the body of the first non-empty section whose heading contains
+    the keyword. Skips empty bodies (Funda sometimes has duplicate section
+    headings where only some have content).
+    """
+    for heading, body in sections:
+        if keyword.lower() in heading.lower() and body:
             return body
     return None
 
@@ -196,16 +321,10 @@ def _find_text_block(text: str, heading: str) -> Optional[str]:
         return None
 
     # Find the end of this section (next heading or end)
-    known_sections = {
-        "kenmerken", "buitenruimte", "voorzieningen", "isolatie",
-        "garage en parkeergelegenheid", "energie", "buurt",
-        "kadastrale gegevens", "kadastraal", "locatie",
-    }
-
     end_idx = len(lines)
     for i in range(heading_idx + 1, len(lines)):
         stripped = lines[i].strip().lower()
-        for section in known_sections:
+        for section in _TOP_LEVEL_SECTIONS:
             if stripped == section:
                 end_idx = i
                 break
@@ -219,8 +338,9 @@ def _extract_field_value(body: str, field_name: str) -> Optional[str]:
     """Extract a field value from a section body by field name.
 
     Funda detail pages use "Field name: value" format.
+    Also handles concatenated format: "FieldnameValue" (no separator).
     """
-    # Try exact match with colon
+    # Try with colon/hyphen separator first
     pattern = re.compile(
         re.escape(field_name) + r"\s*[:\-]\s*(.+)",
         re.IGNORECASE | re.MULTILINE,
@@ -229,9 +349,10 @@ def _extract_field_value(body: str, field_name: str) -> Optional[str]:
     if m:
         return m.group(1).strip()
 
-    # Try without colon (just the field name on one line, value on next)
+    # Try without separator (just the field name, value immediately follows)
+    # Use word boundary to avoid matching partial field names
     pattern2 = re.compile(
-        re.escape(field_name) + r"\s*\n\s*(.+)",
+        r'(?<!\w)' + re.escape(field_name) + r'(\S.*)$',
         re.IGNORECASE | re.MULTILINE,
     )
     m = pattern2.search(body)
@@ -241,50 +362,201 @@ def _extract_field_value(body: str, field_name: str) -> Optional[str]:
     return None
 
 
+def _extract_field_until_next(
+    body: str, field_name: str, next_fields: Optional[list[str]] = None
+) -> Optional[str]:
+    """Extract a field value that has no separator between name and value.
+
+    Funda's rendered text often has duplicate content: a concatenated block
+    followed by a newline-separated block. This function prefers the
+    newline-separated format where each field is on its own line.
+
+    Args:
+        body: The text body to search.
+        field_name: The field name to find.
+        next_fields: Optional list of known next field names to use as
+            boundaries for free-text fields.
+
+    Returns:
+        The extracted field value (first line only), or None if not found.
+    """
+    if not body:
+        return None
+
+    escaped = re.escape(field_name)
+
+    # Strategy 1: Try newline-separated format (most reliable)
+    # Look for "^field_name\nvalue\n" pattern where value is on its own line
+    if next_fields:
+        nl_boundary = r'(?:\n' + '|'.join(next_fields) + r')'
+    else:
+        nl_boundary = r'\n'
+    nl_pattern = re.compile(
+        r'(?m)^' + escaped + r'\n(.*?)(?=' + nl_boundary + r'$)',
+        re.DOTALL,
+    )
+    m = nl_pattern.search(body)
+    if m:
+        val = m.group(1).strip()
+        if val:
+            return val.split('\n')[0].strip()
+
+    # Strategy 2: Fallback — capture until next newline (for fields where
+    # the next line is a duplicate value, not a field name)
+    fallback_pattern = re.compile(
+        r'(?m)^' + escaped + r'\n(.*?)(?=\n)',
+        re.DOTALL,
+    )
+    m = fallback_pattern.search(body)
+    if m:
+        val = m.group(1).strip()
+        if val:
+            return val.split('\n')[0].strip()
+
+    # Strategy 3: Try concatenated format
+    # Funda concatenates fields like "EnergielabelCIsolatieDakisolatie..."
+    if next_fields:
+        # Match next field at start of line, or inline, or end of string.
+        # Also add `$` as a final fallback so non-greedy capture doesn't
+        # fail when no next_field is found (e.g., "Soort garageCarport"
+        # where "Carport" is not in next_fields).
+        next_pattern = "|".join(
+            f"(?:\\n{n})|(?:{n})|(?:{n}$)" for n in next_fields
+        ) + "|$"
+        pattern = re.compile(
+            escaped + r'(\S.*?)(?:' + next_pattern + r')',
+            re.IGNORECASE | re.DOTALL,
+        )
+    else:
+        pattern = re.compile(
+            escaped + r'(\S.*?)(?:\n|$)',
+            re.IGNORECASE | re.DOTALL,
+        )
+
+    m = pattern.search(body)
+    if m:
+        val = m.group(1).strip()
+        if val:
+            return val.split('\n')[0].strip()
+    return None
+
+
+def _extract_field_no_sep(body: str, field_name: str) -> Optional[str]:
+    """Extract a field value where there is NO separator between name and value.
+
+    Funda uses formats like "Bouwjaar1969" (no space/colon between field
+    name and value). This function handles that format.
+
+    For fields with known value patterns (numbers, letters), uses a
+    pattern-specific regex. For free-text fields, captures until the next
+    known field or section heading.
+    """
+    escaped = re.escape(field_name)
+    pattern = re.compile(
+        r'(?<!\w)' + escaped + r'(\S.*)$',
+        re.IGNORECASE | re.MULTILINE,
+    )
+    m = pattern.search(body)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _extract_field_number(
+    body: str, field_name: str, suffix: str = ""
+) -> Optional[int]:
+    """Extract a numeric field value with optional suffix.
+
+    E.g., "Perceel163 m²" → 163, "Bouwjaar1969" → 1969.
+    """
+    escaped = re.escape(field_name)
+    suffix_pattern = re.escape(suffix) if suffix else ""
+    pattern = re.compile(
+        r'(?<!\w)' + escaped + r'\s*(\d+)' + suffix_pattern,
+        re.IGNORECASE,
+    )
+    m = pattern.search(body)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Field extraction functions
 # ---------------------------------------------------------------------------
 
-def _extract_ownership(body: Optional[str]) -> tuple[Optional[str], Optional[float]]:
-    """Extract ownership_type and erfpacht_canon_annual from Kenmerken body."""
-    if not body:
+def _extract_ownership(
+    kenmerken_body: Optional[str],
+    subsections: list[tuple[str, str]],
+) -> tuple[Optional[str], Optional[float]]:
+    """Extract ownership_type and erfpacht_canon_annual from Kenmerken.
+
+    ownership_type is in "Kadastrale gegevens" subsection → "Eigendomssituatie".
+    erfpacht_canon_annual is in "Kadastrale gegevens" subsection → "Lasten".
+    """
+    if not kenmerken_body:
         return None, None
 
     ownership_type = None
     erfpacht_canon = None
 
-    # Check for eigendomssituatie
-    eigendom = _extract_field_value(body, "Eigendomssituatie")
-    if eigendom:
-        if "erfpacht" in eigendom.lower():
-            ownership_type = "erfpacht"
-        elif "volle eigendom" in eigendom.lower():
-            ownership_type = "full"
-
-    # If not found in Eigendomssituatie, check the whole body
-    if not ownership_type:
-        if "erfpacht" in body.lower():
-            ownership_type = "erfpacht"
-        elif "volle eigendom" in body.lower():
-            ownership_type = "full"
-
-    # Extract erfpacht canon (annual last)
-    # Look for patterns like "Lasten: € 123/year" or "€ 123 per jaar"
-    canon_patterns = [
-        r"€\s*([\d.]+)\s*(?:per\s*)?jaar",
-        r"€\s*([\d.]+)\s*/\s*jaar",
-        r"€\s*([\d.]+)\s*jaarlijks",
-        r"lasten.*?€\s*([\d.]+)",
-    ]
-    for pattern in canon_patterns:
-        m = re.search(pattern, body, re.IGNORECASE)
-        if m:
-            raw = m.group(1).replace(".", "").replace(",", ".")
-            try:
-                erfpacht_canon = float(raw)
-            except ValueError:
-                pass
+    # Find "Kadastrale gegevens" subsection
+    kadastrale_body = None
+    for heading, body in subsections:
+        if "kadastrale" in heading.lower() or "kadastraal" in heading.lower():
+            kadastrale_body = body
             break
+
+    if kadastrale_body:
+        # Extract ownership from "Eigendomssituatie" field
+        eigendom = _extract_field_until_next(kadastrale_body, "Eigendomssituatie", [
+            "Lasten", "Oppervlakte", "Kadastraal",
+        ])
+        if eigendom:
+            if "erfpacht" in eigendom.lower():
+                ownership_type = "erfpacht"
+            elif "volle eigendom" in eigendom.lower():
+                ownership_type = "full"
+
+        # Extract canon from "Lasten" field within kadastrale subsection
+        lasten = _extract_field_until_next(kadastrale_body, "Lasten", [
+            "AMSTERDAM", "MILL", "WIJCHEN", "AALSMEER",  # Next parcel name
+        ])
+        if lasten:
+            # Pattern: "€ 408,85 per jaar"
+            m = re.search(
+                r"€\s*([\d]+)\s*,\s*(\d+)\s*(?:per\s*)?jaar",
+                lasten,
+                re.IGNORECASE,
+            )
+            if m:
+                try:
+                    erfpacht_canon = float(f"{m.group(1)}.{m.group(2)}")
+                except ValueError:
+                    pass
+            else:
+                # Single amount without cents
+                m = re.search(
+                    r"€\s*([\d.]+)\s*(?:per\s*)?jaar",
+                    lasten,
+                    re.IGNORECASE,
+                )
+                if m:
+                    raw = m.group(1).replace(".", "").replace(",", ".")
+                    try:
+                        erfpacht_canon = float(raw)
+                    except ValueError:
+                        pass
+
+    # Fallback: check whole body if not found in subsection
+    if not ownership_type:
+        if "erfpacht" in kenmerken_body.lower():
+            ownership_type = "erfpacht"
+        elif "volle eigendom" in kenmerken_body.lower():
+            ownership_type = "full"
 
     return ownership_type, erfpacht_canon
 
@@ -305,32 +577,61 @@ def _extract_garden(body: Optional[str]) -> dict:
     garden_orientation = None
 
     # garden_present: True if "Tuin" field exists at all
-    if re.search(r"Tuin\s*[:\-]", body, re.IGNORECASE):
+    if re.search(r'(?<!\w)Tuin\s*(?:[:\-]|\S)', body, re.IGNORECASE):
         garden_present = True
 
     # garden_type: raw value of Tuin field
     if garden_present:
-        garden_type = _extract_field_value(body, "Tuin")
+        garden_type = _extract_field_until_next(body, "Tuin", [
+            "Ligging tuin", "Ligging", "Balkon/dakterras", "Bergruimte",
+        ])
 
-    # garden_size_m2: regex for (\d+)\s*m² in tuin-related text
-    size_patterns = [
-        r"Achtertuin\s*[:\-]?\s*(\d+)\s*m\u00b2",
-        r"Tuin\s*[:\-]?\s*(\d+)\s*m\u00b2",
-        r"grootte.*?(\d+)\s*m\u00b2",
-    ]
-    for pattern in size_patterns:
-        m = re.search(pattern, body, re.IGNORECASE)
+    # garden_size_m2: the size field label is dynamic — it matches whatever
+    # "Tuin"'s value was (e.g. "Tuin: Achtertuin" → size field is "Achtertuin:
+    # 74 m² ...").  Also fall back to generic "Tuin" label and "grootte"
+    # patterns if the dynamic match fails.
+    if garden_type:
+        dynamic_pattern = re.compile(
+            re.escape(garden_type) + r"\s*[:\-]?\s*(\d+)\s*m\u00b2",
+            re.IGNORECASE,
+        )
+        m = dynamic_pattern.search(body)
         if m:
             try:
                 garden_size_m2 = int(m.group(1))
             except ValueError:
                 pass
-            break
 
-    # garden_orientation: "Ligging tuin"
-    orientation = _extract_field_value(body, "Ligging tuin")
-    if orientation:
-        garden_orientation = orientation
+    if garden_size_m2 is None:
+        # Fallback: generic patterns for non-dynamic cases
+        fallback_patterns = [
+            r"Tuin\s*[:\-]?\s*(\d+)\s*m\u00b2",
+            r"grootte.*?(\d+)\s*m\u00b2",
+        ]
+        for pattern in fallback_patterns:
+            m = re.search(pattern, body, re.IGNORECASE)
+            if m:
+                try:
+                    garden_size_m2 = int(m.group(1))
+                except ValueError:
+                    pass
+                break
+
+    # garden_orientation: "Ligging tuin" — extract just the compass direction
+    orientation_raw = _extract_field_until_next(body, "Ligging tuin", [
+        "Garage", "Parkeergelegenheid", "Bergruimte", "Buitenruimte",
+    ])
+    if orientation_raw:
+        # Extract compass direction using whole-word matching.
+        # Prefer longer compound words first (noordwesten before noord).
+        compass_words = [
+            "noordwesten", "zuidwesten", "noordoosten", "zuidoosten",
+            "noorden", "zuiden", "oosten", "westen",
+        ]
+        for kw in compass_words:
+            if kw in orientation_raw.lower():
+                garden_orientation = kw
+                break
 
     return {
         "garden_present": garden_present,
@@ -345,19 +646,28 @@ def _extract_balcony(body: Optional[str]) -> Optional[bool]:
     if not body:
         return None
 
-    balcony_text = _extract_field_value(body, "Balkon/dakterras")
+    balcony_text = _extract_field_until_next(body, "Balkon/dakterras", [
+        "Bergruimte", "Garage", "Parkeergelegenheid", "Buitenruimte",
+    ])
     if balcony_text and "aanwezig" in balcony_text.lower():
         return True
     return None
 
 
 def _extract_building_bound_outdoor(body: Optional[str]) -> Optional[int]:
-    """Extract building_bound_outdoor_m2 from body."""
+    """Extract building_bound_outdoor_m2 from body.
+
+    This field is "Gebouwgebonden buitenruimte" — do NOT confuse with
+    "Overige inpandige ruimte" or "Externe bergruimte".
+    """
     if not body:
         return None
 
-    text = body
-    m = re.search(r"Gebouwgebonden buitenruimte\s*[:\-]?\s*(\d+)\s*m\u00b2", text, re.IGNORECASE)
+    m = re.search(
+        r"Gebouwgebonden buitenruimte\s*[:\-]?\s*(\d+)\s*m\u00b2",
+        body,
+        re.IGNORECASE,
+    )
     if m:
         try:
             return int(m.group(1))
@@ -371,13 +681,15 @@ def _extract_garage_type(body: Optional[str]) -> Optional[str]:
     if not body:
         return None
 
-    garage_text = _extract_field_value(body, "Soort garage")
+    garage_text = _extract_field_until_next(body, "Soort garage", [
+        "Capaciteit", "Voorzieningen", "Buitenruimte", "Parkeergelegenheid",
+    ])
     if not garage_text:
         return None
 
     garage_lower = garage_text.lower()
     if "niet aanwezig" in garage_lower:
-        return "none"
+        return None  # Spec says: "Niet aanwezig, wel mogelijk" → null
     elif any(w in garage_lower for w in ["aangebouwd", "inpandig"]):
         return "attached"
     elif "vrijstaand" in garage_lower:
@@ -393,7 +705,7 @@ def _extract_parking_type(body: Optional[str]) -> Optional[str]:
     if not body:
         return None
 
-    parking_text = _extract_field_value(body, "Soort parkeergelegenheid")
+    parking_text = _extract_field_no_sep(body, "Soort parkeergelegenheid")
     if not parking_text:
         return None
 
@@ -416,15 +728,37 @@ def _extract_insulation(body: Optional[str]) -> tuple[Optional[str], Optional[fl
     if not body:
         return None, None
 
-    raw = _extract_field_value(body, "Isolatie")
-    if raw is None:
-        # Try finding "Isolatie" as a standalone field
+    # The Isolatie section body may contain the value directly (without
+    # a field name prefix) or it may be in the Energie subsection with
+    # concatenated format. Handle both cases.
+
+    raw = None
+
+    # Strategy 1: If body starts with a value (no "Isolatie" prefix),
+    # take the first segment (before " | " or newline)
+    if not re.search(r'(?i)^isolatie', body):
+        # Body doesn't start with "Isolatie" — take first segment
+        m = re.match(r'([^\n|]+)', body.strip())
+        if m:
+            raw = m.group(1).strip()
+
+    # Strategy 2: If body has "Isolatie" field, extract using boundary
+    if not raw:
+        raw = _extract_field_until_next(body, "Isolatie", [
+            "Verwarming", "Warm water", "Cv-ketel",
+        ])
+
+    # Strategy 3: Fallback regex
+    if not raw:
         m = re.search(r"Isolatie\s*[:\-]?\s*(.+)", body, re.IGNORECASE)
         if m:
             raw = m.group(1).strip()
 
     if not raw:
         return None, None
+
+    # Strip leading comma/space
+    raw = re.sub(r'^[,;\s]+', '', raw)
 
     score = _compute_insulation_score(raw)
     return raw, score
@@ -461,7 +795,10 @@ def _extract_heating(body: Optional[str]) -> Optional[str]:
     if not body:
         return None
 
-    heating_text = _extract_field_value(body, "Verwarming")
+    # "Verwarming" value extends until "Cv-ketel" or end of section
+    heating_text = _extract_field_until_next(body, "Verwarming", [
+        "Cv-ketel", "Warm water",
+    ])
     if not heating_text:
         return None
 
@@ -491,19 +828,67 @@ def _extract_boiler_year(body: Optional[str]) -> Optional[int]:
     return None
 
 
-def _extract_amenities(body: Optional[str]) -> tuple[Optional[str], list]:
-    """Extract amenities_raw from Voorzieningen body."""
+def _extract_boiler_year_from_energie(energie_body: Optional[str]) -> Optional[int]:
+    """Extract boiler_year from Energie section by finding the Cv-ketel field.
+
+    The Energie section has multiple "Cv-ketel" occurrences:
+    - Verwarming -> Cv-ketel (heating type)
+    - Warm water -> Cv-ketel (heating type)
+    - Cv-ketel -> Nefit (gas gestookt combiketel uit 2011, eigendom) (boiler desc)
+
+    We need the LAST occurrence which has the boiler description.
+    """
+    if not energie_body:
+        return None
+
+    # Find all "Cv-ketel" positions and take the last one
+    positions = [m.start() for m in re.finditer(r'(?i)Cv-ketel', energie_body)]
+    if not positions:
+        return None
+
+    # Take the last occurrence
+    last_pos = positions[-1]
+    cv_text = energie_body[last_pos + len("Cv-ketel"):]
+
+    # Search for "uit YYYY" in the boiler description
+    m = re.search(r"uit\s+(\d{4})", cv_text)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+    return None
+
+
+def _extract_energy_label(body: Optional[str]) -> Optional[str]:
+    """Extract energy_label from body (Energielabel field).
+
+    The Energie section on Funda uses "FieldnameValue" format with no
+    separator (e.g. "EnergielabelCIsolatieDakisolatie...").  We must
+    extract the value immediately after "Energielabel" — which is a
+    single letter like A, B, C, D, E, F, or G (possibly followed by
+    "+" like A+, A++, A+++).
+    """
     if not body:
-        return None, []
+        return None
 
-    raw = _extract_field_value(body, "Voorzieningen")
-    if not raw:
-        # Try finding Voorzieningen as a standalone heading
-        m = re.search(r"Voorzieningen\s*[:\-]?\s*(.+)", body, re.IGNORECASE)
-        if m:
-            raw = m.group(1).strip()
+    # Primary: "FieldnameValue" format (no separator) — match Energielabel
+    # followed by the grade letter (+ signs) immediately.
+    m = re.search(r"Energielabel\s*([A-G][+]*)", body, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
 
-    return raw, []  # matched list computed by scoring.py
+    # Fallback: try with colon/hyphen separator (in case format varies)
+    label = _extract_field_value(body, "Energielabel")
+    if label:
+        return label
+
+    # Fallback: try "Energielabel" on its own line, value on next line
+    m = re.search(r"Energielabel\s*\n\s*([A-G][+]*)", body, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    return None
 
 
 def _extract_bathrooms(body: Optional[str]) -> Optional[int]:
@@ -526,7 +911,11 @@ def _extract_neighborhood_avg_price(body: Optional[str]) -> Optional[float]:
         return None
 
     # "Gem. vraagprijs / m²" followed by a number
-    m = re.search(r"Gem\.?\s*vraagprijs.*?[/\s]m\u00b2.*?€?\s*([\d.]+)", body, re.IGNORECASE)
+    m = re.search(
+        r"Gem\.?\s*vraagprijs.*?[/\s]m\u00b2.*?€?\s*([\d.]+)",
+        body,
+        re.IGNORECASE,
+    )
     if m:
         try:
             return float(m.group(1).replace(".", "").replace(",", "."))
@@ -534,7 +923,9 @@ def _extract_neighborhood_avg_price(body: Optional[str]) -> Optional[float]:
             pass
 
     # Fallback: just look for price per m² pattern
-    m = re.search(r"€?\s*([\d.]+)\s*/\s*m\u00b2", body, re.IGNORECASE)
+    m = re.search(
+        r"€?\s*([\d.]+)\s*/\s*m\u00b2", body, re.IGNORECASE
+    )
     if m:
         try:
             return float(m.group(1).replace(".", "").replace(",", "."))
@@ -555,6 +946,110 @@ def _extract_rooms(body: Optional[str]) -> Optional[int]:
             return int(m.group(1))
         except ValueError:
             pass
+    return None
+
+
+def _extract_property_type(kenmerken_body: Optional[str]) -> Optional[str]:
+    """Extract property_type from Kenmerken body (Bouw -> Soort woonhuis)."""
+    if not kenmerken_body:
+        return None
+
+    # Use _extract_field_until_next for boundary-aware extraction
+    property_type = _extract_field_until_next(kenmerken_body, "Soort woonhuis", [
+        "Soort bouw", "Bouwjaar", "Specifiek", "Oppervlakten", "Indeling",
+        "Energie", "Overdracht", "Kadastrale", "Buitenruimte", "Garage",
+        "Parkeergelegenheid", "Bergruimte",
+    ])
+    if property_type:
+        return property_type
+
+    return None
+
+
+def _extract_year_built(kenmerken_body: Optional[str]) -> Optional[int]:
+    """Extract year_built from Kenmerken body (Bouw -> Bouwjaar)."""
+    if not kenmerken_body:
+        return None
+
+    m = re.search(
+        r"(?<!\w)Bouwjaar(\d{4})",
+        kenmerken_body,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+
+    # Fallback: no word boundary (Bouwjaar may be preceded by word char)
+    m = re.search(
+        r"Bouwjaar(\d{4})",
+        kenmerken_body,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+
+    return None
+
+
+def _extract_status(kenmerken_body: Optional[str]) -> Optional[str]:
+    """Extract status from Kenmerken body (Overdracht -> Status)."""
+    if not kenmerken_body:
+        return None
+
+    # Use _extract_field_until_next for boundary-aware extraction
+    status = _extract_field_until_next(kenmerken_body, "Status", [
+        "Bouw", "Oppervlakten", "Indeling", "Energie", "Kadastrale",
+        "Buitenruimte", "Garage", "Parkeergelegenheid", "Bergruimte",
+    ])
+    if status:
+        return status
+
+    # Fallback: simple pattern without word boundary
+    m = re.search(
+        r"Status(\S.+?)(?=\s*(?:Bouw|Oppervlakten|Indeling|Energie|Kadastrale|Buitenruimte|Garage|Parkeergelegenheid|Bergruimte)\b|$)",
+        kenmerken_body,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip()
+
+    return None
+
+
+def _extract_plot_size(kenmerken_body: Optional[str]) -> Optional[int]:
+    """Extract plot_size_m2 from Kenmerken body (Oppervlakten en inhoud → Perceel)."""
+    if not kenmerken_body:
+        return None
+
+    m = re.search(
+        r"(?<!\w)Perceel\s*[:\-]?\s*(\d+)\s*m\u00b2",
+        kenmerken_body,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+
+    # No separator format
+    m = re.search(
+        r"(?<!\w)Perceel(\d+)\s*m\u00b2",
+        kenmerken_body,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+
     return None
 
 
@@ -606,22 +1101,49 @@ def fetch_listing_details(url: str) -> dict:
                 sections = _split_sections(text)
 
                 # Kenmerken section — most fields
-                kenmerken_body = _find_section(sections, "Kenmerken")
+                kenmerken_body = _find_section_body(sections, "Kenmerken")
                 if not kenmerken_body:
                     kenmerken_body = _find_text_block(text, "Kenmerken")
 
-                # --- Ownership ---
-                ownership_type, erfpacht_canon = _extract_ownership(kenmerken_body)
+                # Parse subsections within Kenmerken
+                kenmerken_subsections = _split_kenmerken_subsections(
+                    kenmerken_body or ""
+                )
+
+                # --- Ownership (Kadastrale gegevens subsection) ---
+                ownership_type, erfpacht_canon = _extract_ownership(
+                    kenmerken_body, kenmerken_subsections
+                )
                 result.ownership_type = ownership_type
                 result.erfpacht_canon_annual = erfpacht_canon
 
-                # --- Rooms ---
+                # --- Rooms (Indeling subsection) ---
                 rooms = _extract_rooms(kenmerken_body)
                 if rooms:
                     result.rooms = rooms
 
+                # --- Property type (Bouw subsection) ---
+                property_type = _extract_property_type(kenmerken_body)
+                if property_type:
+                    result.property_type = property_type
+
+                # --- Year built (Bouw subsection) ---
+                year_built = _extract_year_built(kenmerken_body)
+                if year_built:
+                    result.year_built = year_built
+
+                # --- Status (Overdracht subsection) ---
+                status = _extract_status(kenmerken_body)
+                if status:
+                    result.status = status
+
+                # --- Plot size (Oppervlakten en inhoud subsection) ---
+                plot_size = _extract_plot_size(kenmerken_body)
+                if plot_size:
+                    result.plot_size_m2 = plot_size
+
                 # --- Buitenruimte section ---
-                buitenruimte_body = _find_section(sections, "Buitenruimte")
+                buitenruimte_body = _find_section_body(sections, "Buitenruimte")
                 if not buitenruimte_body:
                     buitenruimte_body = _find_text_block(text, "Buitenruimte")
 
@@ -636,31 +1158,50 @@ def fetch_listing_details(url: str) -> dict:
                 if balcony is not None:
                     result.balcony_present = balcony
 
-                # Building bound outdoor — may be in Buitenruimte
-                building_outdoor = _extract_building_bound_outdoor(buitenruimte_body)
-                if building_outdoor is not None:
-                    result.building_bound_outdoor_m2 = building_outdoor
+                # Building bound outdoor — in "Oppervlakten en inhoud" subsection
+                # Do NOT read from Buitenruimte (that's a different section)
+                opp_body = None
+                for heading, body in kenmerken_subsections:
+                    if "oppervlakten" in heading.lower():
+                        opp_body = body
+                        break
+                if not opp_body:
+                    opp_body = _find_text_block(text, "Oppervlakten en inhoud")
+                if opp_body:
+                    building_outdoor = _extract_building_bound_outdoor(opp_body)
+                    if building_outdoor is not None:
+                        result.building_bound_outdoor_m2 = building_outdoor
 
                 # --- Garage and parking ---
-                garage_body = _find_section(sections, "Garage en parkeergelegenheid")
+                # Garage type: check "Garage" subsection within Kenmerken
+                garage_body = None
+                for heading, body in kenmerken_subsections:
+                    if "garage" in heading.lower():
+                        garage_body = body
+                        break
                 if not garage_body:
-                    garage_body = _find_text_block(text, "Garage en parkeergelegenheid")
-
-                # Also check Kenmerken for garage (one sample had "Carport" there)
-                garage_from_kenmerken = _extract_garage_type(kenmerken_body)
-                if not result.garage_type and garage_from_kenmerken:
-                    result.garage_type = garage_from_kenmerken
+                    garage_body = _find_text_block(text, "Garage")
 
                 if garage_body:
                     garage_type = _extract_garage_type(garage_body)
                     if garage_type:
                         result.garage_type = garage_type
-                    parking_type = _extract_parking_type(garage_body)
+
+                # Parking type: check "Parkeergelegenheid" subsection
+                parking_body = None
+                for heading, body in kenmerken_subsections:
+                    if "parkeergelegenheid" in heading.lower():
+                        parking_body = body
+                        break
+                if not parking_body:
+                    parking_body = _find_text_block(text, "Parkeergelegenheid")
+                if parking_body:
+                    parking_type = _extract_parking_type(parking_body)
                     if parking_type:
                         result.parking_type = parking_type
 
                 # --- Isolatie section ---
-                isolatie_body = _find_section(sections, "Isolatie")
+                isolatie_body = _find_section_body(sections, "Isolatie")
                 if not isolatie_body:
                     isolatie_body = _find_text_block(text, "Isolatie")
 
@@ -675,20 +1216,26 @@ def fetch_listing_details(url: str) -> dict:
                     heating = _extract_heating(verwarming_body)
                 result.heating_type = heating
 
-                # --- Cv-ketel (boiler year) ---
-                cv_body = _find_text_block(text, "Cv-ketel")
-                if not cv_body:
-                    cv_body = isolatie_body  # sometimes cv-ketel is in isolatie section
-                boiler_year = _extract_boiler_year(cv_body)
-                if boiler_year:
-                    result.boiler_year = boiler_year
+                # --- Energielabel (from "Energie" Kenmerken subsection) ---
+                # Must read from the "Energie" subsection (siblings: Isolatie,
+                # Verwarming, Warm water, Cv-ketel), NOT from the compact
+                # icon-stat row near the top of the page (which has no labels).
+                energie_body = _find_section_body(sections, "Energie")
+                if not energie_body:
+                    energie_body = _find_text_block(text, "Energie")
+                energy_label = _extract_energy_label(energie_body)
+                if energy_label:
+                    result.energy_label = energy_label
 
-                # --- Voorzieningen (amenities) ---
-                voorzieningen_body = _find_section(sections, "Voorzieningen")
-                if not voorzieningen_body:
-                    voorzieningen_body = _find_text_block(text, "Voorzieningen")
-                amenities_raw, _ = _extract_amenities(voorzieningen_body)
-                result.amenities_raw = amenities_raw
+                # --- Cv-ketel (boiler year) ---
+                # Must scope to the Cv-ketel field within the Energie section
+                # to avoid matching year_built or other years in the text.
+                # Use _extract_boiler_year_from_energie which finds the LAST
+                # "Cv-ketel" occurrence (the one with the boiler description).
+                if energie_body:
+                    boiler_year = _extract_boiler_year_from_energie(energie_body)
+                    if boiler_year:
+                        result.boiler_year = boiler_year
 
                 # --- Aantal badkamers ---
                 bathrooms = _extract_bathrooms(kenmerken_body)
@@ -696,7 +1243,7 @@ def fetch_listing_details(url: str) -> dict:
                     result.bathrooms = bathrooms
 
                 # --- Buurt section ---
-                buurt_body = _find_section(sections, "Buurt")
+                buurt_body = _find_section_body(sections, "Buurt")
                 if not buurt_body:
                     buurt_body = _find_text_block(text, "Buurt")
                 neighborhood_avg = _extract_neighborhood_avg_price(buurt_body)
@@ -707,7 +1254,11 @@ def fetch_listing_details(url: str) -> dict:
                 browser.close()
 
     except Exception as exc:
-        logger.warning("Failed to fetch detail page %s: %s (returning partial data)", url, exc)
+        logger.warning(
+            "Failed to fetch detail page %s: %s (returning partial data)",
+            url,
+            exc,
+        )
         # Return whatever we have — all fields will be None if we failed early
         result.detail_fetched_at = datetime.now(timezone.utc).isoformat()
 
