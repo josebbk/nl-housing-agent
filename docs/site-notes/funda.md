@@ -9,6 +9,44 @@ be known.
 
 (newest entries at the top)
 
+### 2026-08-17 — Listing loss due to brittle per-page dedup key
+
+- **Symptom:** The scraper was returning ~47 listings across 5 pages instead
+  of the expected ~80. Listings were being silently dropped during
+  `_extract_page_listings()` without any error or warning.
+
+- **Diagnosis:** The JavaScript dedup key in `_extract_page_listings()` used
+  `card.innerHTML.substring(0, 200)` to detect duplicate cards on a page.
+  Funda's card template has identical CSS classes and structure for every
+  card — the first 200 characters of innerHTML are nearly identical across
+  different listings. Only the variable content (address, price, area)
+  differs, and this often appears after position 200. This caused distinct
+  listings to collide on the dedup key, with one silently dropped.
+
+  Confirmed by simulating two cards with different addresses but identical
+  CSS class structure in the first 200 characters — the dedup keys were
+  identical.
+
+  Additionally, `_extract_listing_data()` silently returned `None` when the
+  listing_id regex failed to match, with no logging to indicate a listing
+  was dropped.
+
+- **Fix:**
+  1. Changed the JavaScript dedup key from `card.innerHTML.substring(0, 200)`
+     to the href itself. Each unique listing has exactly one href
+     (e.g., `/detail/koop/amsterdam/huis-x/12345/`), so this is guaranteed
+     unique. Multiple links on the same card (image + text) share the same
+     href, so this correctly skips them.
+  2. Moved the dedup check to before the DOM traversal (more efficient —
+     skip processing entirely if we've seen this href).
+  3. Added `logger.warning()` when `_extract_listing_data()` drops a listing
+     due to regex failure, so future drops are visible in logs.
+
+- **Pattern/Warning:** Never use HTML content as a dedup key for listings.
+  Always use a guaranteed-unique identifier (listing_id or href). HTML
+  content can collide across distinct items, especially when the template
+  structure is fixed and only variable data differs.
+
 ### 2026-08-16 — Amenities extraction removed from codebase
 
 The amenities (`Voorzieningen`) extraction and scoring logic has been

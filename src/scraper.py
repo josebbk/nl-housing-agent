@@ -172,6 +172,10 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
     id_m = re.search(r"/(\d+)/$", href)
     listing_id = id_m.group(1) if id_m else None
     if not listing_id:
+        logger.warning(
+            "Listing dropped: href %s does not match expected /detail/koop/.../{id}/ pattern",
+            href,
+        )
         return None
 
     # Neighborhood/city: /detail/koop/{city}/
@@ -437,6 +441,16 @@ def _extract_page_listings(page: Page) -> list[dict]:
             allLinks.forEach(link => {
                 const href = link.getAttribute('href');
                 
+                // Deduplicate by href — each unique listing has exactly one
+                // href. Multiple links on the same card (image + text) share
+                // the same href, so this correctly skips them. Using href
+                // instead of card HTML prefix avoids false collisions:
+                // Funda's card template has identical CSS classes and structure
+                // for every card, so the first 200 chars of innerHTML are
+                // nearly identical across different listings.
+                if (seen.has(href)) return;
+                seen.add(href);
+                
                 // Find the card container (relative overflow-hidden)
                 let parent = link.parentElement;
                 let card = null;
@@ -450,11 +464,6 @@ def _extract_page_listings(page: Page) -> list[dict]:
                     parent = parent.parentElement;
                 }
                 if (!card) return;
-                
-                // Skip duplicates (same card HTML prefix)
-                const cardKey = card.innerHTML.substring(0, 200);
-                if (seen.has(cardKey)) return;
-                seen.add(cardKey);
                 
                 // Find the flexRow parent that contains the card data
                 let flexRow = card.parentElement;
