@@ -442,6 +442,124 @@ When a task requires a new test mode or CLI option, document the behavior in the
   real run can still notify them.
 * `--db-path PATH` — overrides the SQLite database path. Defaults to
   `data/funda.db` under the project root.
+* `--backfill` — one-time backfill for listings with `score IS NULL`.
+  Queries listings that pass the active Phase 1 filters, fetches their
+  detail pages, scores them with the current 9-criterion system, and
+  updates the DB. Notifications are threshold-gated at 80 (configurable
+  via `notification_score_threshold` in `config/preferences.json`):
+  listings with score >= 80 get a Telegram notification; listings below
+  80 have `notified = 1` set but no notification is sent, preventing
+  them from re-entering the notification flow through unrelated triggers.
+  Uses the same anti-bot pacing as a normal run (sequential, same delays,
+  one browser instance). Does NOT run via cron — this is a manual,
+  occasional operation.
+* `--seed` — full pipeline (scrape, store, score) without sending any
+  Telegram notifications. All matching listings are marked `notified = 1`
+  so a subsequent normal run only notifies for genuinely new/changed
+  listings. Use for initial database population or after a manual DB
+  reset. Does NOT run via cron.
+
+### Backfill — when and how to run
+
+The `--backfill` flag is a **manual, occasional** operation. It is not part
+of the cron schedule.
+
+**When to run:**
+
+* After a scoring system change (e.g. weight changes, criterion added/removed)
+  — to re-score existing listings with the new criteria.
+* After initial scoring implementation — to populate scores for all existing
+  listings that were scraped before scoring was enabled.
+* Ad-hoc: if you notice a batch of listings without scores and want to
+  populate them.
+
+**How to run:**
+
+```bash
+source .venv/bin/activate
+python -m src.main --backfill --db-path data/funda.db
+```
+
+Use `--dry-run` first to preview what would happen without sending
+notifications or marking listings as notified.
+
+**What it does:**
+
+1. Loads the active Phase 1 filters from `config/filters.json`.
+2. Queries the database for listings that pass those filters AND have
+   `score IS NULL`.
+3. For each: fetches the detail page, scores with the current scoring
+   system, persists the score and detail fields to the DB.
+4. Threshold-gated notifications: score >= 80 triggers a Telegram
+   notification and sets `notified = 1`; score < 80 sets `notified = 1`
+   without notifying.
+5. Logs a summary: listings found, backfilled, crossed threshold, failures.
+
+**Anti-bot behavior:**
+
+The backfill uses the same sequential detail-fetch + scoring logic as the
+normal run path. No parallelism, same delays, one browser instance. It may
+take a while for large batches — be patient.
+
+### Seed run (`--seed`)
+
+The `--seed` flag populates the database with full real data for the first
+time (or after a manual DB reset). It runs the complete pipeline — scrape,
+store, score — but suppresses all Telegram notifications.
+
+**When to use:**
+
+* Initial database population — when setting up the scraper for the first
+  time or after a manual DB reset.
+* Re-populating after a data loss event.
+
+**When NOT to use:**
+
+* This is not a replacement for normal scheduled runs.
+* Do not add this to cron.
+
+**How it differs from other modes:**
+
+| Mode | Scrapes real data | Stores in DB | Scores matches | Sends notifications | Sets notified=1 |
+|---|---|---|---|---|---|
+| Normal run | Yes | Yes | Yes | Yes (for matching) | Yes (on success) |
+| `--dry-run` | Yes | Yes | Yes | No | No (stays 0) |
+| `--seed` | Yes | Yes | Yes | No | Yes (all matches) |
+
+The key difference from `--dry-run`: seed sets `notified = 1` for all
+matching listings, treating them as "already seen and already notified".
+A subsequent normal run will only notify for listings that are genuinely
+new or changed after the seed run.
+
+**How to run:**
+
+```bash
+source .venv/bin/activate
+python -m src.main --seed --db-path data/funda.db
+```
+
+**Output:**
+
+The seed run logs a clear summary at the end:
+
+```
+SEED RUN COMPLETE
+----------------------------------------
+  Start:          2026-08-16T...
+  End:            2026-08-16T...
+  Duration:       312.4s
+  Scraped:        96
+  New inserted:   24
+  Updated:        56
+  Matching:       18
+  Scored:         18
+  Marked notified: 18
+  Score failures: 0
+----------------------------------------
+SEED RUN — All 18 matching listing(s) marked notified=1 without sending
+Telegram. A subsequent normal run will only notify for listings that are
+genuinely new or changed after this point.
+```
 
 ### Exit codes
 

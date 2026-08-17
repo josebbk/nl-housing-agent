@@ -1,24 +1,32 @@
 {
   "weights": {
-    "neighborhood_value": 22,
-    "construction_condition": 18,
-    "ownership": 15,
-    "energy_label": 13,
-    "amenities": 10,
-    "garden": 10,
-    "parking": 7,
-    "bathrooms": 5
+    "neighborhood_value": 21,
+    "ownership": 17,
+    "energy_label": 14,
+    "living_area": 12,
+    "construction_condition": 11,
+    "parking": 8,
+    "rooms": 7,
+    "bathrooms": 6,
+    "garden": 4
   },
   "energy_label_scale": ["G","F","E","D","C","B","A","A+","A++","A+++","A++++"],
-  "amenities_tracked": [
-    "airconditioning", "alarminstallatie", "buitenzonwering",
-    "tv kabel", "glasvezelkabel", "mechanische ventilatie", "rolluiken"
-  ],
   "insulation_keywords": {
     "components": ["dakisolatie", "vloerisolatie", "muurisolatie", "spouwmuurisolatie"],
     "glass_tiers": ["enkel glas", "dubbel glas", "dubbelglas", "hr-glas", "hr glas", "hr+", "hr++"]
   },
   "neighborhood_value_thresholds": { "good_ratio": 0.8, "bad_ratio": 1.2 },
   "garden_size_cap_m2": 50,
-  "garden_orientation_bonus": ["zuiden", "westen"]
+  "garden_orientation_bonus": ["zuiden", "westen"],
+  "living_area_thresholds": {
+    "floor": 100,
+    "cap": 200,
+    "note": "Fallback values from config/filters.json. At runtime, _score_living_area reads filter_config.living_area_min as floor; cap = floor + 100 when no max is configured."
+  },
+  "rooms_thresholds": {
+    "floor": 3,
+    "cap": 8,
+    "note": "Fallback values from config/filters.json.bedrooms_min. At runtime, _score_rooms uses filter_config.bedrooms_min as floor; cap = max(8, floor + 4)."
+  },
+  "notification_score_threshold": 80
 }

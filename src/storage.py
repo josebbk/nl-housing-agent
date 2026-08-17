@@ -60,11 +60,9 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                         parking_type TEXT,
                         insulation_raw TEXT,
                         insulation_score REAL,
-                        heating_type TEXT,
-                        boiler_year INTEGER,
-                        amenities_raw TEXT,
-                        amenities_matched TEXT,
-                        bathrooms INTEGER,
+heating_type TEXT,
+                    boiler_year INTEGER,
+                    bathrooms INTEGER,
                         neighborhood_avg_price_m2 REAL,
                         score INTEGER,
                         score_breakdown TEXT,
@@ -89,8 +87,6 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                     ("insulation_score", "REAL"),
                     ("heating_type", "TEXT"),
                     ("boiler_year", "INTEGER"),
-                    ("amenities_raw", "TEXT"),
-                    ("amenities_matched", "TEXT"),
                     ("bathrooms", "INTEGER"),
                     ("neighborhood_avg_price_m2", "REAL"),
                     ("score", "INTEGER"),
@@ -170,7 +166,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
         "garden_type", "garden_size_m2", "garden_orientation",
         "balcony_present", "building_bound_outdoor_m2",
         "garage_type", "parking_type", "insulation_raw", "insulation_score",
-        "heating_type", "boiler_year", "amenities_raw", "amenities_matched",
+        "heating_type", "boiler_year",
         "bathrooms", "neighborhood_avg_price_m2",
         "score", "score_breakdown", "score_confidence", "detail_fetched_at",
     ]
@@ -203,7 +199,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                             garden_type, garden_size_m2, garden_orientation,
                             balcony_present, building_bound_outdoor_m2,
                             garage_type, parking_type, insulation_raw, insulation_score,
-                            heating_type, boiler_year, amenities_raw, amenities_matched,
+                            heating_type, boiler_year,
                             bathrooms, neighborhood_avg_price_m2,
                             score, score_breakdown, score_confidence, detail_fetched_at
                         ) VALUES (
@@ -214,7 +210,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                             :garden_type, :garden_size_m2, :garden_orientation,
                             :balcony_present, :building_bound_outdoor_m2,
                             :garage_type, :parking_type, :insulation_raw, :insulation_score,
-                            :heating_type, :boiler_year, :amenities_raw, :amenities_matched,
+                            :heating_type, :boiler_year,
                             :bathrooms, :neighborhood_avg_price_m2,
                             :score, :score_breakdown, :score_confidence, :detail_fetched_at
                         );
@@ -246,7 +242,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                     "garden_type", "garden_size_m2", "garden_orientation",
                     "balcony_present", "building_bound_outdoor_m2",
                     "garage_type", "parking_type", "insulation_raw", "insulation_score",
-                    "heating_type", "boiler_year", "amenities_raw", "amenities_matched",
+                    "heating_type", "boiler_year",
                     "bathrooms", "neighborhood_avg_price_m2",
                     "score", "score_breakdown", "score_confidence", "detail_fetched_at",
                 ]

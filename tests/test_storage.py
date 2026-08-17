@@ -88,7 +88,7 @@ class StorageContractTestCase(unittest.TestCase):
             "garden_type", "garden_size_m2", "garden_orientation",
             "balcony_present", "building_bound_outdoor_m2",
             "garage_type", "parking_type", "insulation_raw", "insulation_score",
-            "heating_type", "boiler_year", "amenities_raw", "amenities_matched",
+            "heating_type", "boiler_year",
             "bathrooms", "neighborhood_avg_price_m2",
             "score", "score_breakdown", "score_confidence", "detail_fetched_at",
         }

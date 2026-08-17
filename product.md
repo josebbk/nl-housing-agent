@@ -276,20 +276,21 @@ product.
 
 Every listing that passes the Phase 1 hard filters is scored before
 notification. The score reflects how well a listing matches the owner's
-preferences across eight weighted criteria:
+preferences across nine weighted criteria:
 
 1. **Neighborhood value** — asking price per m² relative to the
    neighborhood average.
-2. **Construction condition** — building age and insulation quality.
-3. **Ownership** — full ownership, erfpacht without canon, or erfpacht
+2. **Ownership** — full ownership, erfpacht without canon, or erfpacht
    with an annual canon.
-4. **Energy label** — from G (lowest) to A++++ (highest).
-5. **Amenities** — keyword matching against tracked amenities
-   (airconditioning, alarm system, sun shading, TV cable, fiber optic,
-   mechanical ventilation, roller shutters).
-6. **Garden** — presence, size, and orientation (south/west bonus).
-7. **Parking** — type (private, carport, paid, public).
+3. **Energy label** — from G (lowest) to A++++ (highest).
+4. **Living area** — how far the listing's living area extends beyond
+   the configured minimum, scaled linearly to a cap of minimum + 100 m².
+5. **Construction condition** — building age and insulation quality.
+6. **Parking** — type (private, carport, paid, public).
+7. **Rooms** — total room count relative to the configured bedrooms
+   minimum, scaled linearly with cap = max(8, floor + 4).
 8. **Bathrooms** — count normalized against a maximum.
+9. **Garden** — presence, size, and orientation (south/west bonus).
 
 Each criterion contributes a weighted subscore. The final score is a
 0–100 number, renormalized so that only criteria with available data

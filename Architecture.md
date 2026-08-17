@@ -137,15 +137,75 @@ notification.
 
 ```
 Phase 1 filter match
-       ↓
-  fetch_listing_details(url)
-       ↓
-  score_listing(detail, preferences)
-       ↓
-  persist detail fields + score to DB row
-       ↓
-  notification with score breakdown
+        ↓
+   fetch_listing_details(url)
+        ↓
+   merge detail fields INTO listing dict
+        ↓
+   score_listing(listing, preferences, filter_config)
+        ↓
+   persist detail fields + score to DB row
+        ↓
+   notification with score breakdown
 ```
+
+**Important:** Detail fields are merged into the listing dict (`listing.update(detail)`),
+not the other way around (`detail.update(listing)`). The listing dict comes from the
+database row (`dict(row)`), which contains all columns including phase2 fields that are
+NULL. If `detail.update(listing)` were used instead, the NULL DB columns would overwrite
+the scraped detail values, resulting in all detail fields being NULL in the database.
+
+### Scoring criteria
+
+The scoring system implements **9 weighted criteria**:
+
+| # | Criterion | Score source | Data source |
+|---|-----------|-------------|-------------|
+| 1 | `neighborhood_value` | `_score_neighborhood_value` | `detail` (price, living_area_m2, neighborhood_avg_price_m2) |
+| 2 | `ownership` | `_score_ownership` | `detail` (ownership_type, erfpacht_canon_annual) |
+| 3 | `energy_label` | `_score_energy_label` | `detail` (energy_label) |
+| 4 | `living_area` | `_score_living_area` | `detail` (living_area_m2) + `filter_config` (living_area_min) |
+| 5 | `construction_condition` | `_score_construction` | `detail` (year_built, insulation_score) |
+| 6 | `parking` | `_score_parking` | `detail` (parking_type) |
+| 7 | `rooms` | `_score_rooms` | `detail` (rooms) + `filter_config` (bedrooms_min) |
+| 8 | `bathrooms` | `_score_bathrooms` | `detail` (bathrooms) |
+| 9 | `garden` | `_score_garden` | `detail` (garden_present, garden_size_m2, garden_orientation) |
+
+#### New criteria: living_area and rooms
+
+Two new scoring functions were added in the Phase 2 expansion:
+
+- **`_score_living_area(detail, filter_config)`** — linear scale between the
+  configured living-area minimum (floor → 0.0) and a cap (cap → 1.0). When only
+  a minimum is configured (no maximum), cap = floor + 100. If no living-area
+  filter is configured at all, the criterion returns `None` and is excluded from
+  scoring. Threshold defaults documented in
+  `config/preferences.json` → `living_area_thresholds`.
+
+- **`_score_rooms(detail, filter_config)`** — linear scale between the
+  configured bedrooms minimum (floor → 0.0) and cap = max(8, floor + 4).
+  Threshold defaults documented in
+  `config/preferences.json` → `rooms_thresholds`.
+
+Both functions accept `filter_config` as an explicit parameter, reading the
+current filter thresholds from `config/filters.json` via `FilterConfig.from_file()`.
+This creates a dependency on the co-worker's `FilterConfig` work in
+`src/config.py` / `src/storage.py` / `src/main.py`, which is already merged
+into this branch.
+
+#### Filter-config dependency
+
+The `score_listing()` function signature is:
+
+```python
+score_listing(detail: dict, preferences: dict | None = None,
+              filter_config: FilterConfig | None = None) -> ScoreResult
+```
+
+When `filter_config` is `None`, it loads from `config/filters.json` as a
+fallback. In production (`main.py`), the `filters` object loaded at run start
+is passed explicitly, ensuring scoring uses the same filter values as the
+Phase 1 filter matching.
 
 ### New modules
 
@@ -202,8 +262,6 @@ insulation_raw TEXT
 insulation_score REAL
 heating_type TEXT
 boiler_year INTEGER
-amenities_raw TEXT
-amenities_matched TEXT
 bathrooms INTEGER
 neighborhood_avg_price_m2 REAL
 score INTEGER
@@ -234,6 +292,22 @@ Score: {score}/100{confidence_flag}
 The confidence flag shows `"⚠ partial data ({missing criteria})"` when
 data is incomplete, and `Score: unavailable` when no scoring data is
 available.
+
+### Notification score threshold
+
+A `notification_score_threshold` value (default 80) is configured in
+`config/preferences.json`. During the backfill run:
+
+* Listings with `score >= threshold` receive a Telegram notification and
+  have `notified = 1` set.
+* Listings with `score < threshold` have `notified = 1` set but do NOT
+  receive a notification. This prevents them from re-entering the
+  notification flow through unrelated triggers (e.g. a future price
+  change that resets `notified = 0`).
+
+This threshold is only applied during backfill. The normal run path
+(not yet implemented with scoring-based filtering) does not use this
+threshold — all matching listings are notified regardless of score.
 
 ---
 
