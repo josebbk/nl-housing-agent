@@ -228,8 +228,22 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                 new_price = data.get("price")
                 new_status = data.get("status")
 
+                # Card-level scrapes always produce status: None, while
+                # detail-page fetches produce a real status string (e.g.
+                # "Beschikbaar").  A None-vs-string difference is an artifact
+                # of the two different data sources, not a real status change.
+                # Preserve the existing status when the new value is None so
+                # that the detail-page status survives Phase-1 re-inserts.
+                if existing_status is not None and new_status is None:
+                    data["status"] = existing_status
+                    new_status = existing_status
+
                 price_changed = existing_price != new_price
-                status_changed = existing_status != new_status
+                status_changed = (
+                    existing_status is not None
+                    and new_status is not None
+                    and existing_status != new_status
+                )
                 needs_renotify = price_changed or status_changed
 
                 # Build an UPDATE query with all updatable fields
@@ -518,6 +532,258 @@ if __name__ == "__main__":
             print("PASS: Listing no longer appears in unnotified query after being marked notified.")
         else:
             print(f"FAIL: Listing still appears in unnotified list: {unnotified_after}.")
+
+        # ------------------------------------------------------------------
+        # Bug 2 regression test: notified persistence across Phase-1 re-insert
+        # ------------------------------------------------------------------
+        # Simulates the exact flow that caused the bug:
+        #   Phase 1 insert (card-level, status=None)
+        #   Phase 2 insert (detail-page, status="Beschikbaar")
+        #   mark_as_notified (notified=1)
+        #   Next run Phase 1 re-insert (card-level, status=None)
+        #   Verify notified is STILL 1 (not reset to 0 by status artifact)
+
+        print(
+            "\n--- Check 8: Bug 2 — notified persists after Phase-1 re-insert ---"
+        )
+
+        # --- Sub-check 8a: Full pipeline — insert → detail update → mark notified ---
+        card_listing = {
+            "listing_id": "bug2-test-1",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug2-1/",
+            "address": "Bug2 Teststraat 1",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,  # card-level scrape always produces status: None
+        }
+
+        detail_listing = dict(card_listing)
+        detail_listing["status"] = "Beschikbaar"  # detail-page produces real status
+
+        # Phase 1: insert with card-level data (status=None)
+        res = insert_listing(card_listing, test_db_path)
+        assert res == "inserted", f"Expected 'inserted', got {res}"
+
+        # Phase 2: update with detail-page data (status="Beschikbaar")
+        res = insert_listing(detail_listing, test_db_path)
+        assert res == "updated_unchanged", (
+            f"Expected 'updated_unchanged' (status None vs Beschikbaar "
+            f"should NOT be a change), got {res}"
+        )
+
+        # mark_as_notified
+        mark_as_notified("bug2-test-1", test_db_path)
+
+        # Verify notified=1 in a FRESH connection (reopening/requerying)
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT notified, status FROM listings WHERE listing_id = ?",
+            ("bug2-test-1",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if row["notified"] == 1:
+            print("PASS: notified=1 after mark_as_notified (fresh connection).")
+        else:
+            print(
+                f"FAIL: notified={row['notified']} after mark_as_notified "
+                f"(expected 1). BUG NOT FIXED."
+            )
+            exit(1)
+
+        if row["status"] == "Beschikbaar":
+            print("PASS: status='Beschikbaar' preserved in DB.")
+        else:
+            print(
+                f"FAIL: status={row['status']} (expected 'Beschikbaar'). "
+                f"Phase-1 overwrote detail-page status."
+            )
+            exit(1)
+
+        # --- Sub-check 8b: Next run Phase-1 re-insert must NOT reset notified ---
+        # Simulate next run: card-level scrape again (status=None)
+        next_run_card = dict(card_listing)  # status=None again
+
+        res = insert_listing(next_run_card, test_db_path)
+        # Should be "updated_unchanged" or "unchanged" — status None vs
+        # "Beschikbaar" should NOT be a change, so notified stays as-is.
+        if res in ("updated_unchanged", "unchanged"):
+            print(
+                "PASS: Phase-1 re-insert with status=None did NOT trigger "
+                "status_changed (returned '{}')."
+                .format(res)
+            )
+        else:
+            print(
+                f"FAIL: Phase-1 re-insert returned '{res}' "
+                f"(expected 'updated_unchanged'). Status artifact not fixed."
+            )
+            exit(1)
+
+        # Verify notified is STILL 1 after Phase-1 re-insert
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT notified, status FROM listings WHERE listing_id = ?",
+            ("bug2-test-1",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if row["notified"] == 1:
+            print(
+                "PASS: notified=1 after Phase-1 re-insert (next run simulation). "
+                "Listing will NOT be re-notified."
+            )
+        else:
+            print(
+                f"FAIL: notified={row['notified']} after Phase-1 re-insert "
+                f"(expected 1). Listing would be re-notified on every run."
+            )
+            exit(1)
+
+        if row["status"] == "Beschikbaar":
+            print(
+                "PASS: status='Beschikbaar' preserved after Phase-1 re-insert."
+            )
+        else:
+            print(
+                f"FAIL: status={row['status']} after Phase-1 re-insert "
+                f"(expected 'Beschikbaar')."
+            )
+            exit(1)
+
+        # --- Sub-check 8c: Notification failure must NOT mark as notified ---
+        # Insert a fresh listing, update with detail data, but do NOT call
+        # mark_as_notified. Verify notified stays 0.
+        card_listing_2 = {
+            "listing_id": "bug2-test-2",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug2-2/",
+            "address": "Bug2 Teststraat 2",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+        detail_listing_2 = dict(card_listing_2)
+        detail_listing_2["status"] = "Beschikbaar"
+
+        insert_listing(card_listing_2, test_db_path)
+        insert_listing(detail_listing_2, test_db_path)
+        # Do NOT call mark_as_notified — simulating a notification send failure
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT notified FROM listings WHERE listing_id = ?",
+            ("bug2-test-2",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if row["notified"] == 0:
+            print(
+                "PASS: notified=0 when notification send fails (listing will "
+                "be retried on a later run)."
+            )
+        else:
+            print(
+                f"FAIL: notified={row['notified']} when notification failed "
+                f"(expected 0). Listing would not be retried."
+            )
+            exit(1)
+
+        # --- Sub-check 8d: Genuine status change SHOULD reset notified ---
+        # Insert a listing, mark as notified, then update with a different
+        # status. Verify notified is reset to 0.
+        card_listing_3 = {
+            "listing_id": "bug2-test-3",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug2-3/",
+            "address": "Bug2 Teststraat 3",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": "Beschikbaar",
+        }
+        detail_listing_3 = dict(card_listing_3)
+        detail_listing_3["status"] = "Verkocht"  # genuine status change
+
+        insert_listing(card_listing_3, test_db_path)
+        mark_as_notified("bug2-test-3", test_db_path)
+
+        # Verify notified=1 before status change
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT notified FROM listings WHERE listing_id = ?",
+            ("bug2-test-3",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+        assert row["notified"] == 1, "Expected notified=1 before status change"
+
+        # Now update with a different status (simulating a detail-page fetch
+        # that shows the listing has been sold)
+        res = insert_listing(detail_listing_3, test_db_path)
+
+        if res == "updated_renotify":
+            print(
+                "PASS: Genuine status change (Beschikbaar → Verkocht) triggered "
+                "status_changed (returned 'updated_renotify')."
+            )
+        else:
+            print(
+                f"FAIL: Genuine status change returned '{res}' "
+                f"(expected 'updated_renotify'). Status change detection broken."
+            )
+            exit(1)
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT notified, status FROM listings WHERE listing_id = ?",
+            ("bug2-test-3",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if row["notified"] == 0 and row["status"] == "Verkocht":
+            print(
+                "PASS: notified reset to 0 and status updated to 'Verkocht' "
+                "on genuine status change. Listing re-enters notification flow."
+            )
+        else:
+            print(
+                f"FAIL: notified={row['notified']}, status={row['status']} "
+                f"(expected notified=0, status='Verkocht')."
+            )
+            exit(1)
             
         print("\n" + "="*50)
         print("ALL TESTS PASSED SUCCESSFULLY!")
