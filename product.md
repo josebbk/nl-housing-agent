@@ -231,6 +231,35 @@ This ensures the owner is alerted when a previously-seen listing becomes
 relevant (price drop into range, or status change to available) without
 generating duplicate notifications for unchanged listings.
 
+### First-run notification gating after a filter change (Task 2)
+
+When `config/filters.json` is edited and the scraper is run, the very next
+run must not blast a notification for every listing that suddenly matches
+the new criteria.  Instead:
+
+* For every **genuinely new listing inserted into the database during that
+  first run**, the listing is saved normally, goes through the detail-page
+  scraping and scoring workflow, and then:
+
+  * If **`score >= 70`**: send the Telegram notification normally, then set
+    `notified = 1`.
+  * If **`score < 70`** (or no score is available): do **not** send a
+    notification, but set `notified = 1` so it does not linger and get
+    notified later purely because it was skipped on this run.
+
+* This gating applies **only** to listings that are actually newly inserted
+  into the database during that first run.  Existing (previously stored)
+  listings that now match the new filters are **not** treated as new.
+
+* On all subsequent runs (filters unchanged), behaviour is unchanged: a
+  genuinely new listing is notified through the normal existing workflow
+  and marked `notified = 1`.
+
+The filter snapshot used to detect changes is stored in the SQLite database
+in the `scraper_metadata` table (key: `filter_snapshot`).  It is saved after
+each run so that the next run can compare the stored snapshot against the
+currently loaded `FilterConfig`.
+
 ---
 
 ## 10. Scheduling

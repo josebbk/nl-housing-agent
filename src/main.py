@@ -19,6 +19,8 @@ from .storage import (
     insert_listing,
     fetch_unnotified_matching_listings,
     mark_as_notified,
+    get_filter_snapshot,
+    save_filter_snapshot,
 )
 from .notifier import send_notifications, send_failure_alert, send_listing_notification
 
@@ -73,6 +75,19 @@ def main() -> None:
     # values, shared by the scraper call and the storage matching query below.
     filters = FilterConfig.from_file()
 
+    # --- Detect whether this is the first run after a filter change ---
+    # (Task 2 — first-run-after-filter-change notification gating)
+    prev_snapshot = get_filter_snapshot(db_path)
+    current_snapshot = filters.__dict__
+    is_first_run_after_filter_change = (
+        prev_snapshot is None or current_snapshot != prev_snapshot
+    )
+    if is_first_run_after_filter_change:
+        logger.info(
+            "First run after filter change detected. "
+            "New listings will be score-gated at 70 on this run only."
+        )
+
     # --- Logging setup ---
     log_dir = Path(__file__).resolve().parent.parent / "logs"
     log_dir.mkdir(exist_ok=True)
@@ -118,6 +133,10 @@ def main() -> None:
         "skipped_listings": 0,
         "required_field_failures": 0,
         "errors": [],
+        # Task 2 — first-run-after-filter-change gating stats
+        "is_first_run_after_filter_change": is_first_run_after_filter_change,
+        "newly_suppressed": 0,
+        "newly_notified": 0,
     }
 
     logger.info("=" * 60)
@@ -164,11 +183,13 @@ def main() -> None:
         _send_failure_alert_and_exit(run_start, stats)
 
     # --- 3. Insert new listings into DB ---
+    newly_inserted_ids: set[str] = set()
     for listing in listings:
         try:
             result = insert_listing(listing, db_path)
             if result == "inserted":
                 stats["new_listings"] += 1
+                newly_inserted_ids.add(listing["listing_id"])
             elif result == "updated_unchanged":
                 stats["updated_listings"] += 1
             elif result == "unchanged":
@@ -258,24 +279,58 @@ def main() -> None:
             scored_listings.append(listing)
 
     # --- 5. Send notifications; mark each listing notified only on success ---
+    # Task 2 — first-run-after-filter-change gating:
+    # On the first run after a filter change, newly inserted listings that
+    # score below 70 are NOT notified but are marked notified=1 anyway so
+    # they do not linger and get notified later purely because they were
+    # skipped on this run.
+    gating_threshold = 70
+
     if dry_run:
         logger.info("Dry-run: skipping %d notification(s)", len(scored_listings))
         final_listings = []
     else:
-        final_listings = scored_listings
+        # Separate listings into gate-passed and gate-suppressed
+        gate_passed = []
+        for listing in scored_listings:
+            listing_id = listing.get("listing_id", "?")
+            if (is_first_run_after_filter_change
+                    and listing_id in newly_inserted_ids
+                    and listing.get("score") is not None
+                    and listing["score"] < gating_threshold):
+                # Score below threshold — suppress notification but mark notified
+                stats["newly_suppressed"] += 1
+                logger.info(
+                    "First-run gate: suppressing notification for newly "
+                    "inserted listing %s (score=%d < %d); "
+                    "marking notified=1.",
+                    listing_id, listing["score"], gating_threshold,
+                )
+                try:
+                    mark_as_notified(listing_id, db_path)
+                except Exception as exc:
+                    logger.error(
+                        "Failed to mark %s as notified after gating: %s",
+                        listing_id, exc, exc_info=True,
+                    )
+                    stats["errors"].append(f"Mark {listing_id}: {exc}")
+            else:
+                gate_passed.append(listing)
+
         try:
-            results = send_notifications(scored_listings)
+            results = send_notifications(gate_passed)
         except Exception as exc:
             logger.error("Notification batch failed: %s", exc, exc_info=True)
             stats["errors"].append(f"Notifications: {exc}")
-            results = [False] * len(scored_listings)
+            results = [False] * len(gate_passed)
 
-        for listing, success in zip(scored_listings, results):
+        for listing, success in zip(gate_passed, results):
             listing_id = listing.get("listing_id", "?")
             if success:
                 try:
                     mark_as_notified(listing_id, db_path)
                     stats["notifications_sent"] += 1
+                    stats["newly_notified"] += 1
                 except Exception as exc:
                     logger.error(
                         "Notification sent but failed to mark %s as notified: %s",
@@ -293,6 +348,13 @@ def main() -> None:
                 )
 
     # --- 6. Summary ---
+    # Persist the current filter snapshot so the next run can detect changes.
+    try:
+        save_filter_snapshot(filters, db_path)
+    except Exception as exc:
+        logger.error("Failed to save filter snapshot: %s", exc, exc_info=True)
+
+    # --- 7. Summary ---
     _log_run_summary(run_start, stats)
 
     # A run is failed when a notification could not be delivered; affected
@@ -700,6 +762,19 @@ def _log_run_summary(run_start: datetime, stats: dict) -> None:
     logger.info("  Matching:       %d", stats["matching_listings"])
     logger.info("  Notified:       %d", stats["notifications_sent"])
     logger.info("  Notify failed:  %d", stats["notifications_failed"])
+
+    # Task 2 — first-run-after-filter-change gating info
+    if stats.get("is_first_run_after_filter_change"):
+        logger.info("  First-run gate: ENABLED (filter changed)")
+        logger.info(
+            "  Newly suppressed (<70):  %d",
+            stats.get("newly_suppressed", 0),
+        )
+        logger.info(
+            "  Newly notified (>=70):   %d",
+            stats.get("newly_notified", 0),
+        )
+
     if stats["errors"]:
         for err in stats["errors"]:
             logger.warning("  Error:          %s", err)

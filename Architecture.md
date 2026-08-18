@@ -309,6 +309,45 @@ This threshold is only applied during backfill. The normal run path
 (not yet implemented with scoring-based filtering) does not use this
 threshold — all matching listings are notified regardless of score.
 
+### First-run-after-filter-change notification gating (Task 2)
+
+When `config/filters.json` is edited, the next scraper run must not
+notification-blast every listing that suddenly matches the new criteria.
+
+**Detection:** a `scraper_metadata` table (created via `CREATE TABLE IF NOT
+EXISTS`) stores the previous filter snapshot as JSON under the key
+`filter_snapshot`.  At run start, `get_filter_snapshot()` compares the
+stored snapshot against the currently loaded `FilterConfig.__dict__`.  If
+absent or different, the run is treated as "first run after filter change."
+
+**Gating logic (in `main.py`):**
+
+1. After the normal scrape → insert → detail-page fetch → scoring flow,
+   the notification loop checks each scored listing.
+2. For listings where `newly_inserted` is `True` **and** the run is the
+   first after a filter change:
+   * `score >= 70` → send notification, set `notified = 1`
+   * `score < 70` → suppress notification, set `notified = 1`
+3. After the notification pass completes, `save_filter_snapshot()` writes
+   the current `FilterConfig.__dict__` to the metadata table.
+
+**The 70-point threshold** is a fixed value used only for first-run gating.
+It does not alter `score_listing()`, scoring weights, score persistence,
+or normal scoring behaviour.  The normal run path (non-first-run) notifies
+all matching listings through the existing workflow regardless of score.
+
+**Storage:** the `scraper_metadata` table has two columns:
+
+```
+key      TEXT PRIMARY KEY
+value    TEXT NOT NULL
+```
+
+The `get_filter_snapshot()` function reads the JSON-encoded `FilterConfig`
+from this table; `save_filter_snapshot()` writes it.  This follows the same
+pattern used for Phase 2 schema migrations (`ALTER TABLE` / `CREATE TABLE
+IF NOT EXISTS`).
+
 ---
 
 ## Phase 2 — Configurable Search Filters

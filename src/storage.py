@@ -327,6 +327,59 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
         )
         raise
 
+def _ensure_metadata_table(conn: sqlite3.Connection) -> None:
+    """Create the scraper_metadata table if it does not exist."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scraper_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    """)
+
+
+def get_filter_snapshot(db_path: Path | str = DEFAULT_DB_PATH) -> dict | None:
+    """Return the previously saved filter snapshot, or None if absent.
+
+    Returns ``None`` when the snapshot has never been saved (first run ever).
+    """
+    db_path = Path(db_path)
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            _ensure_metadata_table(conn)
+            cursor = conn.execute(
+                "SELECT value FROM scraper_metadata WHERE key = ?;",
+                ("filter_snapshot",),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0])
+    except sqlite3.Error as e:
+        logger.exception("Failed to read filter snapshot at %s: %s", db_path, e)
+        raise
+
+
+def save_filter_snapshot(
+    filters: FilterConfig, db_path: Path | str = DEFAULT_DB_PATH,
+) -> None:
+    """Persist the current filter configuration as a JSON snapshot."""
+    db_path = Path(db_path)
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            _ensure_metadata_table(conn)
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO scraper_metadata (key, value) "
+                    "VALUES ('filter_snapshot', ?);",
+                    (json.dumps(filters.__dict__),),
+                )
+    except sqlite3.Error as e:
+        logger.exception(
+            "Failed to save filter snapshot at %s: %s", db_path, e,
+        )
+        raise
+
+
 def listing_exists(listing_id: str, db_path: Path | str = DEFAULT_DB_PATH) -> bool:
     """
     Checks if a listing with the given listing_id already exists in the database.

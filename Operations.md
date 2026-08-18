@@ -201,6 +201,51 @@ Never print the Telegram bot token in logs or terminal output.
 
 If a secret is accidentally committed, stop and treat it as a security incident rather than simply deleting it from the latest commit.
 
+### First-run notification gating after a filter change (Task 2)
+
+When you edit `config/filters.json`, the very next scraper run will **not**
+blast a notification for every listing that suddenly matches the new
+criteria.
+
+**What happens:**
+
+1. The scraper loads the new filters from `config/filters.json`.
+2. It compares them against the previously saved filter snapshot stored in
+   the SQLite database (`scraper_metadata` table, key `filter_snapshot`).
+3. If the snapshot is absent (first run ever) or differs from the loaded
+   filters, the run is treated as "first run after filter change."
+4. During this run, every **genuinely newly inserted** listing goes through
+   the normal detail-page scraping and scoring workflow.  The score is then
+   compared against a fixed threshold of **70**:
+   * `score >= 70` → Telegram notification sent, `notified = 1`
+   * `score < 70` → notification suppressed, `notified = 1`
+5. After the run completes, the new filter snapshot is saved to the
+   database.  Subsequent runs (with unchanged filters) behave normally.
+
+**Important:** Only listings that are actually newly inserted into the
+database during that first run are gated.  Existing listings that now match
+the new filters are **not** treated as new and are not affected by this
+gating.
+
+**Run summary output:** when gating is active, the run summary includes:
+
+```
+  First-run gate: ENABLED (filter changed)
+  Newly suppressed (<70):  3
+  Newly notified (>=70):   2
+```
+
+**To change filters:**
+
+1. Edit `config/filters.json` with your new criteria.
+2. Run the scraper normally (`python -m src.main`).
+3. Check the run summary for the gating output.
+4. On subsequent runs, the gating is disabled automatically.
+
+**No manual intervention needed.** The filter snapshot is managed
+automatically by the scraper.  The `--dry-run`, `--seed`, and `--backfill`
+flags are unaffected by this gating logic.
+
 ---
 
 ## 5. Database and Runtime Data
