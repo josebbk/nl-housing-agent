@@ -547,24 +547,21 @@ listing_id already exists?
        │           ↓
        │      queue notification
        │
-       └── yes → compare price and status
-                   ↓
-              price or status changed?
-                   ├── yes → update all fields,
-                   │         reset notified=0,
-                   │         re-enter filter/notification flow
-                   │
-                   └── no → update other fields only,
-                             leave notified untouched
+└── yes → update all fields,
+                    leave notified untouched
 ```
 
 The database should not generate duplicate new-listing notifications merely
 because a listing appears in multiple scheduled runs.
 
 The `insert_listing` function in `storage.py` returns a status per listing:
-`"inserted"`, `"updated_renotify"`, `"updated_unchanged"`, or `"unchanged"`.
-`main.py` uses these to track distinct counts of new, updated, and
-re-notified listings in the run summary.
+`"inserted"`, `"updated_unchanged"`, or `"unchanged"`.
+`main.py` uses these to track distinct counts of new and updated listings
+in the run summary.
+
+> **Superseded (Task 1):** The return value `"updated_renotify"` was removed.
+> It previously indicated that price or status had changed and `notified` was
+> reset to 0. See the superseded section below for the previous logic.
 
 ### Database update semantics (detail-page field preservation)
 
@@ -704,6 +701,10 @@ debug independently.
 
 #### Re-notification on price or status change
 
+> **Superseded (Task 1):** The following behavior was removed. It is preserved
+> here for historical context. See `product.md` §"Re-notification on price or
+> status change (superseded)" for the product-level impact.
+
 When `insert_listing` encounters an existing listing, it compares the new
 scraped price and status against the stored values:
 
@@ -717,6 +718,13 @@ scraped price and status against the stored values:
 This means the system can alert the owner about a previously-seen listing
 that becomes relevant (e.g. a price drop into the target range) without
 generating duplicate notifications for unchanged listings.
+
+#### Current behavior (post-Task 1)
+
+`insert_listing` no longer compares price or status to decide whether to
+reset `notified`.  When an existing listing is updated, `notified` is always
+preserved as-is.  `notified` is only modified by `mark_as_notified()` or
+the filter-change logic (Task 2).
 
 ---
 

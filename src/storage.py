@@ -119,18 +119,16 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
     """
     Inserts a new listing or updates an existing one.
 
-    If the listing already exists (based on listing_id), compares the new
-    scraped values against the stored row.  If price or status differs from
-    what is stored, updates all fields and resets notified to 0 (re-enters
-    the matching/notification flow on this run).  If neither price nor status
-    changed, updates the other fields but leaves notified untouched.
+    If the listing already exists (based on listing_id), updates all fields
+    but always preserves the existing ``notified`` value.  ``notified``
+    never changes as a side effect of this function — it is only modified
+    by ``mark_as_notified()`` or via the filter-change logic in Task 2.
 
-    first_seen_at and listing_id are never modified on update.
+    ``first_seen_at`` and ``listing_id`` are never modified on update.
 
     Returns one of:
       "inserted"            — new listing, written for the first time
-      "updated_renotify"    — price or status changed; notified reset to 0
-      "updated_unchanged"   — other fields changed; notified left as-is
+      "updated_unchanged"   — existing row updated (any fields changed)
       "unchanged"           — row identical to what was already stored
     """
     db_path = Path(db_path)
@@ -276,14 +274,6 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                     if existing_val is not None and new_val is None:
                         data[field] = existing_val
 
-                price_changed = existing_price != new_price
-                status_changed = (
-                    existing_status is not None
-                    and new_status is not None
-                    and existing_status != new_status
-                )
-                needs_renotify = price_changed or status_changed
-
                 # Build an UPDATE query with all updatable fields
                 # (never touch listing_id or first_seen_at)
                 updatable = [
@@ -299,10 +289,10 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                     "score", "score_breakdown", "score_confidence", "detail_fetched_at",
                 ]
                 set_clause = ", ".join(f"{col} = :{col}" for col in updatable)
-                if needs_renotify:
-                    data["notified"] = 0
-                else:
-                    data["notified"] = existing["notified"]
+                # Always preserve the existing notified value — it is only
+                # modified by mark_as_notified() or the filter-change logic
+                # (Task 2), never as a side effect of insert_listing().
+                data["notified"] = existing["notified"]
 
                 update_data = {col: data.get(col) for col in updatable}
 
@@ -317,8 +307,6 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                 # Check if any values actually changed
                 all_unchanged = True
                 for col in updatable:
-                    if col == "notified" and needs_renotify:
-                        continue  # notified was forcibly reset
                     if existing[col] != data.get(col):
                         all_unchanged = False
                         break
@@ -326,18 +314,11 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                 if all_unchanged:
                     return "unchanged"
 
-                if needs_renotify:
-                    logger.info(
-                        "Updated listing %s (%s): price/status changed, resetting notified.",
-                        listing_id, data.get("address"),
-                    )
-                    return "updated_renotify"
-                else:
-                    logger.debug(
-                        "Updated listing %s (%s): other fields changed.",
-                        listing_id, data.get("address"),
-                    )
-                    return "updated_unchanged"
+                logger.debug(
+                    "Updated listing %s (%s): fields changed.",
+                    listing_id, data.get("address"),
+                )
+                return "updated_unchanged"
 
     except sqlite3.Error as e:
         logger.exception(
@@ -749,9 +730,9 @@ if __name__ == "__main__":
             )
             exit(1)
 
-        # --- Sub-check 8d: Genuine status change SHOULD reset notified ---
+        # --- Sub-check 8d: Genuine status change does NOT reset notified ---
         # Insert a listing, mark as notified, then update with a different
-        # status. Verify notified is reset to 0.
+        # status. Verify notified is NOT reset to 0.
         card_listing_3 = {
             "listing_id": "bug2-test-3",
             "url": "https://www.funda.nl/koop/amsterdam/test-bug2-3/",
@@ -789,15 +770,15 @@ if __name__ == "__main__":
         # that shows the listing has been sold)
         res = insert_listing(detail_listing_3, test_db_path)
 
-        if res == "updated_renotify":
+        if res == "updated_unchanged":
             print(
-                "PASS: Genuine status change (Beschikbaar → Verkocht) triggered "
-                "status_changed (returned 'updated_renotify')."
+                "PASS: Genuine status change (Beschikbaar → Verkocht) did NOT "
+                "trigger re-notify (returned 'updated_unchanged')."
             )
         else:
             print(
                 f"FAIL: Genuine status change returned '{res}' "
-                f"(expected 'updated_renotify'). Status change detection broken."
+                f"(expected 'updated_unchanged'). Re-notify logic not removed."
             )
             exit(1)
 
@@ -811,15 +792,16 @@ if __name__ == "__main__":
         row = cur.fetchone()
         fresh_conn.close()
 
-        if row["notified"] == 0 and row["status"] == "Verkocht":
+        if row["notified"] == 1 and row["status"] == "Verkocht":
             print(
-                "PASS: notified reset to 0 and status updated to 'Verkocht' "
-                "on genuine status change. Listing re-enters notification flow."
+                "PASS: notified=1 preserved and status updated to 'Verkocht' "
+                "on genuine status change. Listing does NOT re-enter "
+                "notification flow."
             )
         else:
             print(
                 f"FAIL: notified={row['notified']}, status={row['status']} "
-                f"(expected notified=0, status='Verkocht')."
+                f"(expected notified=1, status='Verkocht')."
             )
             exit(1)
 
@@ -1101,8 +1083,8 @@ if __name__ == "__main__":
             "score": 85,
         })
         res = insert_listing(detail_listing_9c_new, test_db_path)
-        assert res in ("updated_unchanged", "updated_renotify"), (
-            f"Expected update, got {res}"
+        assert res in ("updated_unchanged",), (
+            f"Expected 'updated_unchanged', got {res}"
         )
 
         fresh_conn = sqlite3.connect(test_db_path)
@@ -1309,8 +1291,8 @@ if __name__ == "__main__":
         card_listing_9g_updated["price"] = 700000
         card_listing_9g_updated["address"] = "Bug3 Teststraat 7 UPDATED"
         res = insert_listing(card_listing_9g_updated, test_db_path)
-        assert res == "updated_renotify", (
-            f"Expected 'updated_renotify' (price changed), got {res}"
+        assert res == "updated_unchanged", (
+            f"Expected 'updated_unchanged' (price changed, no re-notify), got {res}"
         )
 
         fresh_conn = sqlite3.connect(test_db_path)

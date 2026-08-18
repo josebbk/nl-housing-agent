@@ -202,18 +202,19 @@ class StorageContractTestCase(unittest.TestCase):
         self.assertEqual(self._notified("80913842"), 1)
         self.assertEqual(fetch_unnotified_matching_listings(self.db), [])
 
-    def test_notified_is_reset_on_price_or_status_change(self):
+    def test_notified_is_preserved_on_price_or_status_change(self):
+        """Task 1: price or status changes must NOT reset notified."""
         insert_listing(scraper_shaped_listing(), self.db)
         mark_as_notified("80913842", self.db)
 
         price_result = insert_listing(scraper_shaped_listing(price=620000), self.db)
-        self.assertEqual(price_result, "updated_renotify")
-        self.assertEqual(self._notified("80913842"), 0)
+        self.assertEqual(price_result, "updated_unchanged")
+        self.assertEqual(self._notified("80913842"), 1)
 
         mark_as_notified("80913842", self.db)
         status_result = insert_listing(scraper_shaped_listing(status="verkocht"), self.db)
-        self.assertEqual(status_result, "updated_renotify")
-        self.assertEqual(self._notified("80913842"), 0)
+        self.assertEqual(status_result, "updated_unchanged")
+        self.assertEqual(self._notified("80913842"), 1)
 
     def test_changed_other_fields_keep_notified_intact(self):
         insert_listing(scraper_shaped_listing(), self.db)

@@ -204,6 +204,15 @@ every scheduled run.
 
 ### Re-notification on price or status change
 
+> **Superseded (Task 1):** The following behavior was removed. It is preserved
+> here for historical context. See `Architecture.md` §"Re-notification on price
+> or status change (superseded)" for the architectural impact.
+
+<!-- SUPERSERVED BY TASK 1: The re-notification-on-price-or-status-change
+     behavior was removed. `notified` is no longer reset by `insert_listing()`
+     when price or status changes. It is only changed by `mark_as_notified()`
+     or the filter-change logic (Task 2). -->
+
 When a scraped listing already exists in the database, the system compares
 the new scraped values against the stored row.
 

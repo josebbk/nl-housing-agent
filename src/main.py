@@ -112,7 +112,6 @@ def main() -> None:
         "listings_scraped": 0,
         "new_listings": 0,
         "updated_listings": 0,
-        "re_notified_listings": 0,
         "matching_listings": 0,
         "notifications_sent": 0,
         "notifications_failed": 0,
@@ -170,9 +169,6 @@ def main() -> None:
             result = insert_listing(listing, db_path)
             if result == "inserted":
                 stats["new_listings"] += 1
-            elif result == "updated_renotify":
-                stats["re_notified_listings"] += 1
-                stats["updated_listings"] += 1
             elif result == "updated_unchanged":
                 stats["updated_listings"] += 1
             elif result == "unchanged":
@@ -572,8 +568,6 @@ def _run_seed(db_path: str, filters: FilterConfig, run_start: datetime) -> None:
             result = insert_listing(listing, db_path)
             if result == "inserted":
                 new_count += 1
-            elif result == "updated_renotify":
-                updated_count += 1
             elif result == "updated_unchanged":
                 updated_count += 1
             elif result == "unchanged":
@@ -702,7 +696,6 @@ def _log_run_summary(run_start: datetime, stats: dict) -> None:
     logger.info("  Scraped:        %d", stats["listings_scraped"])
     logger.info("  New:            %d", stats["new_listings"])
     logger.info("  Updated:        %d", stats["updated_listings"])
-    logger.info("  Re-notified:    %d", stats["re_notified_listings"])
     logger.info("  Skipped:        %d", stats["skipped_listings"])
     logger.info("  Matching:       %d", stats["matching_listings"])
     logger.info("  Notified:       %d", stats["notifications_sent"])
