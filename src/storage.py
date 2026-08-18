@@ -238,6 +238,44 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                     data["status"] = existing_status
                     new_status = existing_status
 
+                # Generalize the status preservation pattern to all fields
+                # that originate from the detail-page scraper (phase2_fields,
+                # rooms, year_built) and shared optional fields (plot_size_m2,
+                # property_type, energy_label).  When a field is not supplied
+                # by the caller (e.g. a card-level scrape that never produced
+                # the field, or a detail-page scrape whose to_dict() filtered
+                # out a None value), preserve the existing DB value rather
+                # than overwriting it with NULL.
+                #
+                # This applies to:
+                #   - Optional fields: rooms, year_built, plot_size_m2,
+                #     property_type, energy_label (explicitly defaulted to
+                #     None by the card scraper or missing entirely)
+                #   - Phase 2 detail fields: all 20 columns in phase2_fields
+                #     (not present in card scraper output at all)
+                #
+                # Card-level fields (url, address, neighborhood, price,
+                # living_area_m2, bedrooms) are NOT included — they must be
+                # freely overwritten on every run.
+                detail_and_shared_fields = [
+                    "rooms", "year_built", "plot_size_m2",
+                    "property_type", "energy_label",
+                    "ownership_type", "erfpacht_canon_annual",
+                    "garden_present", "garden_type", "garden_size_m2",
+                    "garden_orientation", "balcony_present",
+                    "building_bound_outdoor_m2", "garage_type",
+                    "parking_type", "insulation_raw", "insulation_score",
+                    "heating_type", "boiler_year", "bathrooms",
+                    "neighborhood_avg_price_m2", "score",
+                    "score_breakdown", "score_confidence",
+                    "detail_fetched_at",
+                ]
+                for field in detail_and_shared_fields:
+                    existing_val = existing[field]
+                    new_val = data.get(field)
+                    if existing_val is not None and new_val is None:
+                        data[field] = existing_val
+
                 price_changed = existing_price != new_price
                 status_changed = (
                     existing_status is not None
@@ -784,7 +822,602 @@ if __name__ == "__main__":
                 f"(expected notified=0, status='Verkocht')."
             )
             exit(1)
-            
+
+        # ------------------------------------------------------------------
+        # Bug 3 regression test: detail-page fields must not be erased by
+        # card-level re-inserts (Phase 1 only runs).
+        #
+        # Simulates the exact flow:
+        #   Run 1: card scrape → insert → detail fetch → insert (phase2 populated)
+        #   Run 2: card scrape → insert (phase 1 only, no detail fetch)
+        #   Verify: phase2 columns are STILL populated after Run 2
+        # ------------------------------------------------------------------
+        print(
+            "\n--- Check 9: Bug 3 — detail fields preserved after card-only re-insert ---"
+        )
+
+        # --- Sub-check 9a: Phase2 fields preserved when card-level re-insert ---
+        card_listing_9a = {
+            "listing_id": "bug3-test-1",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug3-1/",
+            "address": "Bug3 Teststraat 1",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+
+        # Simulate a detail-page fetch that populates phase2 fields
+        detail_listing_9a = dict(card_listing_9a)
+        detail_listing_9a.update({
+            "ownership_type": "erfpacht",
+            "erfpacht_canon_annual": 408.85,
+            "garden_present": True,
+            "garden_type": "achtertuin",
+            "garden_size_m2": 74,
+            "garden_orientation": "zuiden",
+            "balcony_present": True,
+            "building_bound_outdoor_m2": 12,
+            "garage_type": "carport",
+            "parking_type": "private",
+            "insulation_raw": "Dakisolatie Muurisolatie",
+            "insulation_score": 0.65,
+            "heating_type": "gas_boiler",
+            "boiler_year": 2011,
+            "bathrooms": 2,
+            "neighborhood_avg_price_m2": 5200.0,
+            "score": 72,
+            "score_breakdown": '{"neighborhood_value": 18}',
+            "score_confidence": "partial",
+            "detail_fetched_at": "2026-08-18T10:00:00+00:00",
+        })
+
+        # Step 1: Insert with detail data (simulates Run 1 with detail fetch)
+        res = insert_listing(detail_listing_9a, test_db_path)
+        assert res in ("inserted", "updated_unchanged"), (
+            f"Expected 'inserted' or 'updated_unchanged', got {res}"
+        )
+
+        # Query DB directly to confirm phase2 fields are populated
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT ownership_type, garden_present, insulation_score, "
+            "parking_type, bathrooms, rooms, year_built, score "
+            "FROM listings WHERE listing_id = ?",
+            ("bug3-test-1",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        checks_9a = [
+            ("ownership_type", row["ownership_type"], "erfpacht"),
+            ("garden_present", row["garden_present"], True),
+            ("insulation_score", row["insulation_score"], 0.65),
+            ("parking_type", row["parking_type"], "private"),
+            ("bathrooms", row["bathrooms"], 2),
+            ("rooms", row["rooms"], None),
+            ("year_built", row["year_built"], None),
+            ("score", row["score"], 72),
+        ]
+        all_pass = True
+        for field, actual, expected in checks_9a:
+            if actual != expected:
+                print(
+                    f"  FAIL: {field}={actual} (expected {expected}) "
+                    f"after detail insert"
+                )
+                all_pass = False
+        if all_pass:
+            print("PASS: All phase2 fields populated after detail insert.")
+
+        # Step 2: Card-level re-insert (simulates Run 2, Phase 1 only)
+        # This is the critical test: card-level data has NO phase2 keys,
+        # rooms=None, year_built=None
+        res = insert_listing(card_listing_9a, test_db_path)
+        assert res in ("updated_unchanged", "unchanged"), (
+            f"Expected 'updated_unchanged' or 'unchanged', got {res} "
+            f"(card-only re-insert should NOT trigger re-notify)"
+        )
+
+        # Query DB directly to confirm phase2 fields are STILL populated
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT ownership_type, garden_present, insulation_score, "
+            "parking_type, bathrooms, rooms, year_built, score "
+            "FROM listings WHERE listing_id = ?",
+            ("bug3-test-1",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        checks_9a_preserved = [
+            ("ownership_type", row["ownership_type"], "erfpacht"),
+            ("garden_present", row["garden_present"], True),
+            ("insulation_score", row["insulation_score"], 0.65),
+            ("parking_type", row["parking_type"], "private"),
+            ("bathrooms", row["bathrooms"], 2),
+            ("rooms", row["rooms"], None),
+            ("year_built", row["year_built"], None),
+            ("score", row["score"], 72),
+        ]
+        all_pass = True
+        for field, actual, expected in checks_9a_preserved:
+            if actual != expected:
+                print(
+                    f"  FAIL: {field}={actual} (expected {expected}) "
+                    f"after card-only re-insert — DETAIL DATA WAS ERASED"
+                )
+                all_pass = False
+        if all_pass:
+            print(
+                "PASS: All phase2 fields STILL populated after card-only "
+                "re-insert. Detail data preserved."
+            )
+
+        # --- Sub-check 9b: Phase2 fields remain NULL when originally NULL ---
+        card_listing_9b = {
+            "listing_id": "bug3-test-2",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug3-2/",
+            "address": "Bug3 Teststraat 2",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+
+        # Insert with detail data but ALL phase2 fields are None/NULL
+        detail_listing_9b = dict(card_listing_9b)
+        detail_listing_9b.update({
+            "ownership_type": None,
+            "erfpacht_canon_annual": None,
+            "garden_present": None,
+            "garden_type": None,
+            "garden_size_m2": None,
+            "garden_orientation": None,
+            "balcony_present": None,
+            "building_bound_outdoor_m2": None,
+            "garage_type": None,
+            "parking_type": None,
+            "insulation_raw": None,
+            "insulation_score": None,
+            "heating_type": None,
+            "boiler_year": None,
+            "bathrooms": None,
+            "neighborhood_avg_price_m2": None,
+            "score": None,
+            "score_breakdown": None,
+            "score_confidence": None,
+            "detail_fetched_at": None,
+        })
+
+        res = insert_listing(detail_listing_9b, test_db_path)
+        assert res in ("inserted", "updated_unchanged"), (
+            f"Expected 'inserted' or 'updated_unchanged', got {res}"
+        )
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT ownership_type, garden_present, insulation_score "
+            "FROM listings WHERE listing_id = ?",
+            ("bug3-test-2",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if row["ownership_type"] is None and row["garden_present"] is None:
+            print(
+                "PASS: Phase2 fields remain NULL when originally NULL."
+            )
+        else:
+            print(
+                f"FAIL: Phase2 fields should be NULL but got "
+                f"ownership_type={row['ownership_type']}, "
+                f"garden_present={row['garden_present']}"
+            )
+            exit(1)
+
+        # Card-level re-insert should keep them NULL
+        res = insert_listing(card_listing_9b, test_db_path)
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT ownership_type, garden_present FROM listings "
+            "WHERE listing_id = ?",
+            ("bug3-test-2",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if row["ownership_type"] is None and row["garden_present"] is None:
+            print(
+                "PASS: Phase2 fields remain NULL after card-only re-insert "
+                "(when originally NULL)."
+            )
+        else:
+            print(
+                f"FAIL: Phase2 fields should still be NULL but got "
+                f"ownership_type={row['ownership_type']}, "
+                f"garden_present={row['garden_present']}"
+            )
+            exit(1)
+
+        # --- Sub-check 9c: Fresh non-None detail value updates correctly ---
+        card_listing_9c = {
+            "listing_id": "bug3-test-3",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug3-3/",
+            "address": "Bug3 Teststraat 3",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+
+        # Step 1: Insert with detail data
+        detail_listing_9c = dict(card_listing_9c)
+        detail_listing_9c.update({
+            "ownership_type": "erfpacht",
+            "garden_present": True,
+            "bathrooms": 2,
+            "score": 72,
+        })
+        res = insert_listing(detail_listing_9c, test_db_path)
+        assert res in ("inserted", "updated_unchanged")
+
+        # Step 2: Card-only re-insert (should preserve phase2 values)
+        res = insert_listing(card_listing_9c, test_db_path)
+        assert res in ("updated_unchanged", "unchanged")
+
+        # Step 3: Fresh detail-page fetch with DIFFERENT values
+        detail_listing_9c_new = dict(card_listing_9c)
+        detail_listing_9c_new.update({
+            "ownership_type": "full",
+            "garden_present": False,
+            "bathrooms": 1,
+            "score": 85,
+        })
+        res = insert_listing(detail_listing_9c_new, test_db_path)
+        assert res in ("updated_unchanged", "updated_renotify"), (
+            f"Expected update, got {res}"
+        )
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT ownership_type, garden_present, bathrooms, score "
+            "FROM listings WHERE listing_id = ?",
+            ("bug3-test-3",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if (row["ownership_type"] == "full"
+                and row["garden_present"] == False
+                and row["bathrooms"] == 1
+                and row["score"] == 85):
+            print(
+                "PASS: Fresh non-None detail values correctly overwrite old "
+                "values while untouched fields are preserved."
+            )
+        else:
+            print(
+                f"FAIL: Expected ownership_type='full', garden_present=False, "
+                f"bathrooms=1, score=85. Got "
+                f"ownership_type={row['ownership_type']}, "
+                f"garden_present={row['garden_present']}, "
+                f"bathrooms={row['bathrooms']}, score={row['score']}"
+            )
+            exit(1)
+
+        # --- Sub-check 9d: rooms and year_built preservation ---
+        card_listing_9d = {
+            "listing_id": "bug3-test-4",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug3-4/",
+            "address": "Bug3 Teststraat 4",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+
+        # Insert with detail data that includes rooms and year_built
+        detail_listing_9d = dict(card_listing_9d)
+        detail_listing_9d.update({
+            "rooms": 4,
+            "year_built": 1969,
+        })
+        res = insert_listing(detail_listing_9d, test_db_path)
+        assert res in ("inserted", "updated_unchanged")
+
+        # Card-only re-insert should preserve rooms and year_built
+        res = insert_listing(card_listing_9d, test_db_path)
+        assert res in ("updated_unchanged", "unchanged")
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT rooms, year_built FROM listings WHERE listing_id = ?",
+            ("bug3-test-4",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if row["rooms"] == 4 and row["year_built"] == 1969:
+            print(
+                "PASS: rooms and year_built preserved after card-only "
+                "re-insert."
+            )
+        else:
+            print(
+                f"FAIL: rooms={row['rooms']} (expected 4), "
+                f"year_built={row['year_built']} (expected 1969)"
+            )
+            exit(1)
+
+        # --- Sub-check 9e: New listing (INSERT) still defaults phase2 to NULL ---
+        card_listing_9e = {
+            "listing_id": "bug3-test-5",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug3-5/",
+            "address": "Bug3 Teststraat 5",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+
+        res = insert_listing(card_listing_9e, test_db_path)
+        assert res == "inserted", f"Expected 'inserted', got {res}"
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT ownership_type, garden_present, rooms, year_built "
+            "FROM listings WHERE listing_id = ?",
+            ("bug3-test-5",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if (row["ownership_type"] is None
+                and row["garden_present"] is None
+                and row["rooms"] is None
+                and row["year_built"] is None):
+            print(
+                "PASS: New listing has phase2 fields defaulting to NULL "
+                "(no prior detail fetch)."
+            )
+        else:
+            print(
+                f"FAIL: New listing should have NULL phase2 fields but got "
+                f"ownership_type={row['ownership_type']}, "
+                f"garden_present={row['garden_present']}, "
+                f"rooms={row['rooms']}, year_built={row['year_built']}"
+            )
+            exit(1)
+
+        # --- Sub-check 9f: Status handling unchanged (no regression) ---
+        card_listing_9f = {
+            "listing_id": "bug3-test-6",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug3-6/",
+            "address": "Bug3 Teststraat 6",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+
+        detail_listing_9f = dict(card_listing_9f)
+        detail_listing_9f["status"] = "Beschikbaar"
+
+        res = insert_listing(detail_listing_9f, test_db_path)
+        assert res in ("inserted", "updated_unchanged")
+
+        # Card-only re-insert should preserve status
+        res = insert_listing(card_listing_9f, test_db_path)
+        assert res in ("updated_unchanged", "unchanged")
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT status FROM listings WHERE listing_id = ?",
+            ("bug3-test-6",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if row["status"] == "Beschikbaar":
+            print(
+                "PASS: Status handling unchanged — preserved after "
+                "card-only re-insert (no regression)."
+            )
+        else:
+            print(
+                f"FAIL: status={row['status']} (expected 'Beschikbaar'). "
+                f"Status preservation regressed."
+            )
+            exit(1)
+
+        # --- Sub-check 9g: Card-level fields still freely overwritable ---
+        card_listing_9g = {
+            "listing_id": "bug3-test-7",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug3-7/",
+            "address": "Bug3 Teststraat 7",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+
+        # Step 1: Insert with card data
+        res = insert_listing(card_listing_9g, test_db_path)
+        assert res == "inserted"
+
+        # Step 2: Update with NEW card data (different price, address)
+        card_listing_9g_updated = dict(card_listing_9g)
+        card_listing_9g_updated["price"] = 700000
+        card_listing_9g_updated["address"] = "Bug3 Teststraat 7 UPDATED"
+        res = insert_listing(card_listing_9g_updated, test_db_path)
+        assert res == "updated_renotify", (
+            f"Expected 'updated_renotify' (price changed), got {res}"
+        )
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT price, address FROM listings WHERE listing_id = ?",
+            ("bug3-test-7",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if (row["price"] == 700000
+                and row["address"] == "Bug3 Teststraat 7 UPDATED"):
+            print(
+                "PASS: Card-level fields (price, address) still freely "
+                "overwritable by newer card-scrape values."
+            )
+        else:
+            print(
+                f"FAIL: price={row['price']} (expected 700000), "
+                f"address={row['address']} (expected 'Bug3 Teststraat 7 UPDATED')"
+            )
+            exit(1)
+
+        # --- Sub-check 9h: Case D — detail fetch with absent field preserves ---
+        # Simulates: listing has phase2 data, detail fetch occurs but field
+        # is genuinely absent on the detail page (to_dict() filters it out)
+        card_listing_9h = {
+            "listing_id": "bug3-test-8",
+            "url": "https://www.funda.nl/koop/amsterdam/test-bug3-8/",
+            "address": "Bug3 Teststraat 8",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+
+        # Step 1: Insert with detail data
+        detail_listing_9h = dict(card_listing_9h)
+        detail_listing_9h.update({
+            "ownership_type": "erfpacht",
+            "garden_present": True,
+            "bathrooms": 2,
+        })
+        res = insert_listing(detail_listing_9h, test_db_path)
+        assert res in ("inserted", "updated_unchanged")
+
+        # Step 2: Simulate a detail-page fetch where some fields are absent
+        # (to_dict() filters out None, so they are NOT in the dict).
+        # This is what happens when detail_scraper.py's DetailData.to_dict()
+        # is called and some fields are None — they get filtered out.
+        # The listing dict is then updated with this partial detail dict.
+        # After listing.update(detail_partial), the phase2 fields that were
+        # absent from detail_partial still have their card-level values
+        # (None) in the listing dict.
+        detail_partial_9h = {
+            "ownership_type": "full",  # This one IS present
+            # garden_present is absent (None on detail page → filtered out)
+            # bathrooms is absent (None on detail page → filtered out)
+        }
+
+        # Simulate the main.py step 4.5 merge
+        listing_9h = dict(card_listing_9h)
+        listing_9h.update(detail_partial_9h)
+        # listing_9h now has:
+        #   ownership_type = "full" (from detail)
+        #   garden_present = None (from card, NOT updated by detail)
+        #   bathrooms = None (from card, NOT updated by detail)
+
+        res = insert_listing(listing_9h, test_db_path)
+        assert res in ("updated_unchanged", "unchanged")
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT ownership_type, garden_present, bathrooms "
+            "FROM listings WHERE listing_id = ?",
+            ("bug3-test-8",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        if (row["ownership_type"] == "full"
+                and row["garden_present"] == True
+                and row["bathrooms"] == 2):
+            print(
+                "PASS: Case D — detail fetch with absent field preserves "
+                "existing DB value (garden_present=True, bathrooms=2 "
+                "preserved despite absent from detail merge)."
+            )
+        else:
+            print(
+                f"FAIL: ownership_type={row['ownership_type']} "
+                f"(expected 'full'), garden_present={row['garden_present']} "
+                f"(expected True), bathrooms={row['bathrooms']} "
+                f"(expected 2)"
+            )
+            exit(1)
+
         print("\n" + "="*50)
         print("ALL TESTS PASSED SUCCESSFULLY!")
         print("="*50)
