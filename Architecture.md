@@ -279,7 +279,8 @@ instances are ever open.
 
 ### Notification format
 
-Scored notifications include:
+> **Superseded (Task 3):** The following format is preserved for historical
+> context. See the current format below for the live specification.
 
 ```
 🏠 {address} — €{price} — {living_area}m² — {bedrooms} bed
@@ -292,6 +293,59 @@ Score: {score}/100{confidence_flag}
 The confidence flag shows `"⚠ partial data ({missing criteria})"` when
 data is incomplete, and `Score: unavailable` when no scoring data is
 available.
+
+#### Current format (Task 3 — redesigned)
+
+The notification message was redesigned to provide a structured, scannable
+score breakdown. The format is:
+
+```
+🏠 {address}
+€{price} · {living_area} m² · {bedrooms} bedrooms
+{property_type} · {neighborhood}
+
+⭐ {score}/100
+⚠️ Adjusted · {missing criteria} data unavailable
+
+🟢 Best
+• {Criterion} — {earned}/{possible}
+• {Criterion} — {earned}/{possible}
+• {Criterion} — {earned}/{possible}
+
+🔴 Weakest
+• {Criterion} — {earned}/{possible}
+• {Criterion} — {earned}/{possible}
+• {Criterion} — {earned}/{possible}
+
+📊 Full score breakdown
+{Criterion} {earned}/{possible} · {Criterion} {earned}/{possible}
+{Criterion} {earned}/{possible} · {Criterion} {earned}/{possible}
+...
+
+{Criterion} N/A
+
+🔗 {url}
+```
+
+**Rules:**
+
+* **Header** — address on line 1, price/area/bedrooms on line 2,
+  property type and neighborhood on line 3.
+* **Score** — `⭐ {score}/100` with bold score value.
+* **Adjusted line** — shown only when `score_confidence == "partial"`,
+  listing the display names of criteria with `matched: false`.
+  Omitted entirely when confidence is `"full"`.
+* **No-data** — when `score_confidence == "no_data"` or `score` is `None`,
+  shows `Score: unavailable` (existing convention).
+* **Best / Weakest** — top 3 and bottom 3 matched criteria sorted by
+  `points_earned` (absolute contribution to total score).
+  If ≤ 3 matched criteria, only Best is shown.
+  If 4–6 matched criteria, Best (top 3) and Weakest (bottom 3) may overlap.
+* **Full score breakdown** — every criterion from `config/preferences.json`
+  weights listed two per line, with `N/A` for unmatched criteria.
+* **Criterion display names** — raw keys (e.g. `neighborhood_value`) are
+  mapped to human-readable labels (e.g. "Neighborhood") in
+  `notifier.py::_CRITERION_LABELS`. This mapping is presentation-only.
 
 ### Notification score threshold
 

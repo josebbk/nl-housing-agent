@@ -29,6 +29,27 @@ _TELEGRAM_API_BASE = "https://api.telegram.org"
 _SEND_MSG_PATH = "/bot{token}/sendMessage"
 _MESSAGE_DELAY = 1.1  # seconds between messages (Telegram rate limit safety)
 
+# Display-name mapping for scoring criteria.
+# Raw keys come from scoring.py / config/preferences.json weights;
+# display names are presentation-only and must not alter criterion keys
+# used by scoring.py or storage.py.
+_CRITERION_LABELS: dict[str, str] = {
+    "neighborhood_value": "Neighborhood",
+    "construction_condition": "Condition",
+    "ownership": "Ownership",
+    "energy_label": "Energy",
+    "living_area": "Living area",
+    "parking": "Parking",
+    "rooms": "Rooms",
+    "bathrooms": "Bathrooms",
+    "garden": "Garden",
+}
+
+
+def _criterion_label(key: str) -> str:
+    """Return the human-readable label for a criterion key."""
+    return _CRITERION_LABELS.get(key, key)
+
 
 def _load_env() -> None:
     """Load .env from the project root if present."""
@@ -66,8 +87,17 @@ def _get_chat_id() -> str:
 def _format_listing_message(listing: dict) -> str:
     """Format a listing dict into a clean Telegram HTML message.
 
-    Includes: address, price, living area, bedrooms, property type,
-    score/breakdown (if available), and a clickable link to the Funda listing.
+    New notification format (Task 3):
+
+    - Header: address, price, living area, bedrooms, property type, neighborhood
+    - Score section with confidence flag and best/weakest criteria
+    - Full score breakdown with N/A for missing criteria
+    - Listing URL
+
+    All values are dynamically populated from the listing dict's existing
+    ``score``, ``score_breakdown`` (JSON list of {criterion,
+    points_earned, points_possible, matched}), and
+    ``score_confidence`` already produced by ``scoring.py``.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -76,58 +106,148 @@ def _format_listing_message(listing: dict) -> str:
     area_text = f"{living_area} m²" if living_area is not None else "N/A"
     bedrooms = listing.get("bedrooms")
     bed_text = str(bedrooms) if bedrooms is not None else "N/A"
-    property_type = listing.get("property_type", "")
+    property_type = listing.get("property_type", "") or ""
+    neighborhood = listing.get("neighborhood", "") or ""
     url = listing.get("url", "")
 
-    parts = [
-        f"\U0001f3e0 <b>{address}</b> \u2014 \u20ac{price_text} \u2014 {area_text} \u2014 {bed_text} bed",
-    ]
+    # --- Header ---
+    parts: list[str] = []
+    parts.append(f"\U0001f3e0 <b>{address}</b>")
+    parts.append(f"\u20ac{price_text} \u00b7 {area_text} \u00b7 {bed_text} bedrooms")
+    if property_type or neighborhood:
+        type_and_area = " \u00b7 ".join(
+            part for part in [property_type, neighborhood] if part
+        )
+        parts.append(type_and_area)
+    parts.append("")  # blank line before score section
 
     # --- Score section ---
     score = listing.get("score")
     confidence = listing.get("score_confidence", "")
     score_breakdown = listing.get("score_breakdown")
 
-    if score is not None and confidence == "no_data":
-        parts.append(f"Score: unavailable")
-    elif score is not None:
-        confidence_flag = ""
-        if confidence == "partial":
-            missing = []
-            if score_breakdown:
-                try:
-                    breakdown_data = json.loads(score_breakdown)
-                    for item in breakdown_data:
-                        if not item.get("matched", True):
-                            crit = item.get("criterion", "unknown")
-                            missing.append(crit)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            if missing:
-                confidence_flag = f" \u26a0\ufe0f partial data ({', '.join(missing)})"
-        parts.append(f"Score: <b>{score}/100</b>{confidence_flag}")
+    if score is None or confidence == "no_data":
+        parts.append("Score: unavailable")
+    else:
+        parts.append(f"\u2b50 <b>{score}/100</b>")
 
-        # Breakdown lines
+        # Adjusted line — only when confidence is "partial"
+        if confidence == "partial" and score_breakdown:
+            try:
+                breakdown_data = json.loads(score_breakdown)
+                missing = [
+                    _criterion_label(item.get("criterion", "unknown"))
+                    for item in breakdown_data
+                    if not item.get("matched", True)
+                ]
+                if missing:
+                    parts.append(
+                        f"\u26a0\ufe0f Adjusted \u00b7 "
+                        f"{', '.join(missing)} data unavailable"
+                    )
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Best / Weakest — sorted by points_earned (absolute score, not ratio)
+        # so the listing's strongest/weakest criteria are shown by their
+        # contribution to the total score.
         if score_breakdown:
             try:
                 breakdown_data = json.loads(score_breakdown)
-                for item in breakdown_data:
-                    criterion = item.get("criterion", "?")
-                    earned = item.get("points_earned", 0)
-                    possible = item.get("points_possible", 0)
-                    matched = item.get("matched", True)
-                    prefix = "\u2713" if matched else "\u2717"
-                    parts.append(f"  {prefix} {criterion}: {earned}/{possible}")
+                matched = [
+                    item for item in breakdown_data if item.get("matched", True)
+                ]
+                unmatched = [
+                    item for item in breakdown_data if not item.get("matched", True)
+                ]
+
+                if matched:
+                    # Sort descending by points_earned for best, ascending for weakest
+                    sorted_desc = sorted(
+                        matched, key=lambda x: x.get("points_earned", 0), reverse=True
+                    )
+                    sorted_asc = sorted(
+                        matched, key=lambda x: x.get("points_earned", 0)
+                    )
+
+                    best = sorted_desc[:3]
+                    weakest = sorted_asc[:3]
+
+                    # If ≤6 criteria matched, best and weakest may overlap.
+                    # With ≤3 matched criteria, show only Best.
+                    # With 4-6 matched criteria, show Best (top 3) and Weakest
+                    # (bottom 3), allowing overlap at the boundary.
+                    if len(matched) <= 3:
+                        parts.append("\U0001f7e2 Best")
+                        for item in best:
+                            label = _criterion_label(item.get("criterion", "?"))
+                            earned = item.get("points_earned", 0)
+                            possible = item.get("points_possible", 0)
+                            parts.append(
+                                f"\u2022 {label} \u2014 {earned}/{possible}"
+                            )
+                    else:
+                        parts.append("\U0001f7e2 Best")
+                        for item in best:
+                            label = _criterion_label(item.get("criterion", "?"))
+                            earned = item.get("points_earned", 0)
+                            possible = item.get("points_possible", 0)
+                            parts.append(
+                                f"\u2022 {label} \u2014 {earned}/{possible}"
+                            )
+                        parts.append("")
+                        parts.append("\U0001f534 Weakest")
+                        for item in weakest:
+                            label = _criterion_label(item.get("criterion", "?"))
+                            earned = item.get("points_earned", 0)
+                            possible = item.get("points_possible", 0)
+                            parts.append(
+                                f"\u2022 {label} \u2014 {earned}/{possible}"
+                            )
+                    parts.append("")
+
             except (json.JSONDecodeError, TypeError):
                 pass
-    else:
-        parts.append("Score: unavailable")
 
-    if property_type:
-        parts.append(f"Type: {property_type}")
+        # Full score breakdown — every criterion defined in preferences,
+        # two per line, with N/A for unmatched criteria.
+        if score_breakdown:
+            try:
+                breakdown_data = json.loads(score_breakdown)
+                # Build a lookup by criterion key for O(1) access
+                breakdown_map = {
+                    item.get("criterion", ""): item for item in breakdown_data
+                }
+                # Iterate over all criterion keys (stable order from preferences)
+                all_criteria = list(breakdown_map.keys())
+                pairs: list[list[str]] = []
+                current_pair: list[str] = []
+                for key in all_criteria:
+                    item = breakdown_map[key]
+                    label = _criterion_label(key)
+                    if item.get("matched", True):
+                        earned = item.get("points_earned", 0)
+                        possible = item.get("points_possible", 0)
+                        current_pair.append(f"{label} {earned}/{possible}")
+                    else:
+                        current_pair.append(f"{label} N/A")
+                    if len(current_pair) == 2:
+                        pairs.append(current_pair)
+                        current_pair = []
+                if current_pair:
+                    pairs.append(current_pair)
 
+                parts.append("\U0001f4ca Full score breakdown")
+                for pair in pairs:
+                    parts.append(" \u00b7 ".join(pair))
+                parts.append("")
+
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    # --- URL ---
     if url:
-        parts.append(f'<a href="{url}">\U0001f517 View on Funda</a>')
+        parts.append(f'\U0001f517 <a href="{url}">View on Funda</a>')
 
     return "\n".join(parts)
 
