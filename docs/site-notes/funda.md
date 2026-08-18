@@ -9,6 +9,53 @@ be known.
 
 (newest entries at the top)
 
+### 2026-08-18 — Detail-page fields erased by card-only re-inserts (storage.py)
+
+- **Symptom:** On the first scraper run, a listing's Phase-2 detail-page
+  fields (ownership_type, garden_present, insulation_score, parking_type,
+  bathrooms, rooms, year_built, etc.) were correctly populated in the
+  database after a detail-page fetch. On the SECOND run, when the same
+  listing was re-encountered via the normal card/results-page scrape and
+  the detail page was NOT re-fetched, the previously stored detail-page
+  field values were being overwritten with NULL in the database.
+
+- **Diagnosis:** `storage.py::insert_listing()` unconditionally defaulted
+  every phase2_fields entry and optional fields (rooms, year_built) to
+  None whenever the key was missing from the incoming dict. For an
+  existing listing, the UPDATE branch built a set_clause from all
+  updatable columns and wrote `data.get(col)` for each — which was
+  always None for detail-only fields on a card-level re-insert.
+
+  The card scraper (`scraper.py::_extract_listing_data`) returns a dict
+  with `"rooms": None` and `"year_built": None` explicitly set, and
+  never includes any of the 20 phase2_fields keys. The detail scraper
+  (`detail_scraper.py::fetch_listing_details`) returns a dict via
+  `DetailData.to_dict()` which filters out None values, so absent
+  detail fields are indistinguishable from "not scraped" at the
+  `insert_listing()` call boundary.
+
+  The codebase already implemented the correct fix pattern for one field
+  (`status`): preserve existing non-None value when new value is None.
+  This was never generalized to the other detail-only fields.
+
+- **Fix:** Generalized the existing `status` preservation pattern to all
+  detail and shared fields in `storage.py::insert_listing()`. When an
+  existing DB value is non-None and the incoming data is None, the
+  existing value is preserved. Protected fields: rooms, year_built,
+  plot_size_m2, property_type, energy_label, and all 20 phase2_fields.
+  Card-level fields (url, address, neighborhood, price, living_area_m2,
+  bedrooms) remain freely overwritable.
+
+- **Pattern/Warning:** The `insert_listing()` function is the single
+  convergence point for ALL listing data from ALL callers (card scraper,
+  detail scraper, backfill, seed). Any field that is not present in the
+  incoming dict will default to None and be written to the UPDATE query.
+  Always distinguish between "this field is not part of this data source"
+  and "this field has changed to None." The preservation pattern
+  (existing non-None + new None → preserve existing) must be applied to
+  all detail-only and shared optional fields, but NOT to card-level
+  fields that must be freely overwritten.
+
 ### 2026-08-18 — ~28 listings lost due to two different Funda card DOM templates
 
 - **Symptom:** The scraper returned 47 listings across 5 pages instead of

@@ -566,6 +566,60 @@ The `insert_listing` function in `storage.py` returns a status per listing:
 `main.py` uses these to track distinct counts of new, updated, and
 re-notified listings in the run summary.
 
+### Database update semantics (detail-page field preservation)
+
+The `insert_listing()` function is the single convergence point for all
+listing data from all callers: the card/results-page scraper, the
+detail-page scraper, the backfill run, and the seed run.
+
+**Key principle:** When updating an existing listing, detail-page fields
+that are not present in the incoming data must NOT be overwritten with
+NULL. This prevents card-level re-inserts from erasing previously stored
+detail-page data.
+
+**How it works:**
+
+1. Card-level scrapes (`scraper.py::_extract_listing_data`) return a dict
+   with card fields explicitly set (including `"rooms": None` and
+   `"year_built": None`) and never include any of the 20 Phase 2
+   detail fields.
+
+2. Detail-page scrapes (`detail_scraper.py::fetch_listing_details`) return
+   a dict via `DetailData.to_dict()` which filters out None values —
+   absent detail fields are indistinguishable from "not scraped" at the
+   `insert_listing()` call boundary.
+
+3. In `storage.py::insert_listing()`, for existing listings, a preservation
+   loop checks all detail and shared optional fields. When an existing DB
+   value is non-None and the incoming data is None, the existing value is
+   preserved rather than overwritten.
+
+**Protected fields** (preserved when incoming data is None):
+`rooms`, `year_built`, `plot_size_m2`, `property_type`, `energy_label`,
+and all 20 Phase 2 fields (`ownership_type`, `erfpacht_canon_annual`,
+`garden_present`, `garden_type`, `garden_size_m2`, `garden_orientation`,
+`balcony_present`, `building_bound_outdoor_m2`, `garage_type`,
+`parking_type`, `insulation_raw`, `insulation_score`, `heating_type`,
+`boiler_year`, `bathrooms`, `neighborhood_avg_price_m2`, `score`,
+`score_breakdown`, `score_confidence`, `detail_fetched_at`).
+
+**Unprotected fields** (freely overwritten on every run):
+`url`, `address`, `neighborhood`, `price`, `living_area_m2`, `bedrooms`.
+These are card-level fields that must always reflect the latest scrape.
+
+**Status special case:** The `status` field has its own preservation
+logic (checked before the general preservation loop) because a None
+status from the card scraper is an artifact of the data source, not a
+real status change. The general preservation loop also covers status
+as a safety net.
+
+**Implications for main.py step 4.5:** When `listing.update(detail)`
+merges detail fields into a listing dict (which originates from a DB row
+and contains all phase2 columns), detail fields that are None on the
+detail page are filtered out by `to_dict()`. The listing dict retains
+its card-level None values for those fields, and the preservation logic
+in `insert_listing()` correctly preserves the existing DB values.
+
 ---
 
 ## Known SQLite Limitations
