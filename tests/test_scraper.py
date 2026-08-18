@@ -139,6 +139,100 @@ class DedupKeyCollisionRegressionTestCase(unittest.TestCase):
         self.assertNotEqual(result_a["address"], result_b["address"])
 
 
+class PromotedCardExtractionTestCase(unittest.TestCase):
+    """Regression tests for promoted/featured card text format.
+
+    Funda's "Blikvanger" (featured) cards have a different text structure:
+    - Line 0: Promo description (e.g. "Ruim wonen aan een kindvriendelijk
+      woonerf, met een zonnige tuin.")
+    - Line 1: Concatenated badges (e.g. "BlikvangerNieuw")
+    - Line 2: Actual street address (e.g. "Dwarswatering 10")
+    - Line 3: Postcode + city (e.g. "1069 RM Amsterdam")
+    - Line 4+: Price, area, bedrooms, energy label
+
+    The address parser must skip lines 0-1 and extract line 2.
+    """
+
+    def test_promoted_card_skips_description_and_badges(self):
+        """A promoted card's first two lines (description + badges) must be
+        skipped, and the street address on line 3 must be extracted."""
+        text = (
+            "Ruim wonen aan een kindvriendelijk woonerf, met een zonnige tuin.\n"
+            "BlikvangerNieuw\n"
+            "Dwarswatering 10\n"
+            "1069 RM Amsterdam\n"
+            "\u20ac 595.000 k.k.\n"
+            "125 m\u00b2\n"
+            "110 m\u00b2\n"
+            "4\n"
+            "B"
+        )
+        href = "/detail/koop/amsterdam/huis-dwarswatering-10/44566926/"
+        result = _extract_listing_data(text, href)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["address"], "Dwarswatering 10")
+        self.assertEqual(result["price"], 595000)
+        self.assertEqual(result["living_area_m2"], 125)
+        self.assertEqual(result["bedrooms"], 4)
+        self.assertEqual(result["energy_label"], "B")
+
+    def test_promoted_card_with_colon_description(self):
+        """A promoted card with a colon in the description line."""
+        text = (
+            "Turn-key woning: direct genieten van comfort en stijl!\n"
+            "BlikvangerNieuw\n"
+            "Nieuwe Osdorpergracht 265\n"
+            "1068 HV Amsterdam\n"
+            "\u20ac 750.000 k.k.\n"
+            "137 m\u00b2\n"
+            "137 m\u00b2\n"
+            "6\n"
+            "A+"
+        )
+        href = "/detail/koop/amsterdam/huis-nieuwe-osdorpergracht-265/80920655/"
+        result = _extract_listing_data(text, href)
+        self.assertIsNotNone(result)
+        # "Nieuwe" must NOT be treated as the badge "nieuw"
+        self.assertEqual(result["address"], "Nieuwe Osdorpergracht 265")
+        self.assertEqual(result["price"], 750000)
+        self.assertEqual(result["bedrooms"], 6)
+
+    def test_badge_word_not_matched_as_street_name_substring(self):
+        """The badge word 'nieuw' must not match 'Nieuwe' in a street name.
+        'Nieuwe Herengracht 42' should be extracted as the address, not
+        skipped as a badge word."""
+        text = (
+            "Nieuw\n"
+            "Nieuwe Herengracht 42\n"
+            "1017 Amsterdam\n"
+            "\u20ac 650.000 k.k.\n"
+            "110 m\u00b2\n"
+            "3\n"
+            "C"
+        )
+        href = "/detail/koop/amsterdam/huis-nieuwe-herengracht-42/12345/"
+        result = _extract_listing_data(text, href)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["address"], "Nieuwe Herengracht 42")
+
+    def test_postcode_line_not_used_as_address(self):
+        """A line like '1069 RM Amsterdam' (postcode + city) must not be
+        used as the address when a street address is available."""
+        text = (
+            "Dwarswatering 10\n"
+            "1069 RM Amsterdam\n"
+            "\u20ac 595.000 k.k.\n"
+            "125 m\u00b2\n"
+            "4\n"
+            "B"
+        )
+        href = "/detail/koop/amsterdam/huis-dwarswatering-10/44566926/"
+        result = _extract_listing_data(text, href)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["address"], "Dwarswatering 10")
+        self.assertNotEqual(result["address"], "1069 RM Amsterdam")
+
+
 class ParsePriceTestCase(unittest.TestCase):
     """Tests for the parse_price helper function."""
 

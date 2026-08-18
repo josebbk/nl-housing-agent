@@ -9,6 +9,58 @@ be known.
 
 (newest entries at the top)
 
+### 2026-08-18 — ~28 listings lost due to two different Funda card DOM templates
+
+- **Symptom:** The scraper returned 47 listings across 5 pages instead of
+  the expected ~75. Diagnostic counting showed: every page had 30 total
+  `<a href*="/detail/koop/">` links, 15 unique after href dedup, but
+  6–9 were dropped at the "no card ancestor" stage on each page. Zero
+  "no flexRow" or "short text" drops.
+
+- **Diagnosis:** Funda uses **two different card DOM templates** on the same
+  search results page:
+
+  1. **Standard cards** (majority): `link → <div class="relative overflow-hidden ...">`
+     → `<div class="flex flex-col @lg:flex-row">` (flexRow with listing data).
+     This is the template the existing code handled correctly.
+
+  2. **Promoted/featured cards** ("Blikvanger"): `link → <div class="">` (empty
+     parent, no wrapper classes). The listing data lives directly in the
+     link's parent `innerText`. These cards also have a different text format:
+     the first line is a promotional description (e.g. "Ruim wonen aan een
+     kindvriendelijk woonerf, met een zonnige tuin."), followed by concatenated
+     badge words ("BlikvangerNieuw"), then the actual address.
+
+  The existing code only handled template #1. Template #2 listings were
+  silently dropped because the `relative overflow-hidden` ancestor walk
+  failed. Across 5 pages, 28 listings were lost this way (6+6+1+9+6).
+
+  Additionally, the address parser had two bugs with promoted card text:
+  (a) The badge word "nieuw" was matching as a substring of "Nieuwe" in
+      street names (e.g. "Nieuwe Osdorpergracht"), causing the real address
+      to be skipped. (b) Promotional description lines were being accepted
+      as addresses because they didn't match the existing skip heuristics.
+
+- **Fix:**
+  1. Added a fallback in `_extract_page_listings()`: when the
+     `relative overflow-hidden` card walk fails, try `link.parentElement`
+     directly. If the parent's `innerText` contains a price (€) and enough
+     text, use it as the listing text source.
+  2. Fixed the address parser in `_extract_listing_data()`:
+     - Badge word detection now uses a regex that matches badge words as
+       complete tokens (not substrings of longer words), using `^(badge1|
+       badge2|...)+$` for concatenated badges like "BlikvangerNieuw".
+     - Added skip for promo description lines: lines longer than 40 chars
+       containing commas are treated as promotional text.
+     - Added skip for postcode+city lines (e.g. "1068 HV Amsterdam").
+
+- **Pattern/Warning:** Funda uses at least two different card DOM templates
+  on search results pages. The `relative overflow-hidden` wrapper is not
+  universal — always have a fallback for listings whose links don't have
+  this ancestor. Promoted/"Blikvanger" cards have a distinct text format
+  with a promo description line followed by concatenated badge words.
+  When debugging listing loss, always check for multiple DOM templates.
+
 ### 2026-08-17 — Listing loss due to brittle per-page dedup key
 
 - **Symptom:** The scraper was returning ~47 listings across 5 pages instead

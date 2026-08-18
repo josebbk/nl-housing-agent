@@ -233,21 +233,45 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
     # Address is typically the first meaningful line that looks like a street
     # address. Funda cards often have badge text ("Nieuw", "Blikvanger") on
     # the first line, so we skip those.
+    # Promoted/featured cards also have a promo description line before the
+    # address (e.g. "Turn-key woning: direct genieten van comfort en stijl!").
     badge_words = {"nieuw", "blikvanger", "advertentie", "verkoop", "verkoopwoning"}
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     address = None
+    # Build regex for concatenated badge words (e.g. "BlikvangerNieuw").
+    # Check if the entire line (lowercased) is composed only of badge words
+    # concatenated together. This won't match "Nieuwe Osdorpergracht 265"
+    # because "nieuwe" != "nieuw" and "osdorpergracht" is not a badge word.
+    concat_pattern = re.compile(
+        r'^(' + '|'.join(badge_words) + r')+$',
+    )
     for line in lines:
-        # Skip badge words
-        if line.lower() in badge_words:
+        line_lower = line.lower()
+        # Skip badge words — exact match or concatenated badges
+        if line_lower in badge_words or concat_pattern.match(line_lower):
             continue
         # Skip lines that are just postcode patterns (those are neighborhood)
         if re.match(r"^\d{4}[A-Z]{2}\s*[A-Z]{0,2}\d{0,2}$", line):
             continue
+        # Skip lines that look like a street address with postcode
+        # (e.g. "1068 HV Amsterdam" — postcode + city on same line)
+        if re.match(r"^\d{4}[A-Z]{2}\s+[A-Z][a-z]+(\s+[A-Z][a-z]+)*$", line):
+            continue
         # Skip lines that look like prices
-        if "€" in line:
+        if "\u20ac" in line:
             continue
         # Skip lines that look like area measurements
-        if "m²" in line:
+        if "m\u00b2" in line:
+            continue
+        # Skip lines that look like promotional descriptions (full sentences
+        # with colons or exclamation marks — Funda's "Blikvanger" cards have
+        # a promo description before the actual address).
+        if ":" in line or line.endswith("!"):
+            continue
+        # Skip lines that look like promotional descriptions: typically
+        # longer than a street address and may contain commas.
+        # Street addresses are usually short (e.g. "Dwarswatering 10").
+        if len(line) > 40 and "," in line:
             continue
         # This should be the address
         address = line
@@ -258,10 +282,19 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
 
     if not address:
         # Fallback: first non-badge line
+        concat_pattern = re.compile(
+            r'^(' + '|'.join(badge_words) + r')+$',
+        )
         for line in lines:
-            if line.lower() not in badge_words:
-                address = line
-                break
+            line_lower = line.lower()
+            if line_lower in badge_words or concat_pattern.match(line_lower):
+                continue
+            if re.match(r"^\d{4}[A-Z]{2}\s*[A-Z]{0,2}\d{0,2}$", line):
+                continue
+            if re.match(r"^\d{4}[A-Z]{2}\s+[A-Z][a-z]+(\s+[A-Z][a-z]+)*$", line):
+                continue
+            address = line
+            break
 
     return {
         "listing_id": listing_id,
@@ -380,8 +413,43 @@ def scrape_funda(
                 page.wait_for_timeout(random.uniform(2000, 4000))
 
                 # Extract listings from the page
-                page_listings = _extract_page_listings(page)
+                page_listings, diag = _extract_page_listings(page)
                 new_count = 0
+
+                logger.info(
+                    "Page %d diagnostics: total_links=%d, after_href_dedup=%d, "
+                    "no_card=%d, fallback_used=%d, no_flexrow=%d, short_text=%d, "
+                    "retained=%d",
+                    page_num,
+                    diag["total_links"],
+                    diag["after_href_dedup"],
+                    diag["dropped_no_card"],
+                    diag["fallback_used"],
+                    diag["dropped_no_flexrow"],
+                    diag["dropped_short_text"],
+                    diag["results"],
+                )
+                if diag["dropped_hrefs_no_card"]:
+                    logger.warning(
+                        "Page %d: dropped %d links (no card ancestor): %s",
+                        page_num,
+                        len(diag["dropped_hrefs_no_card"]),
+                        diag["dropped_hrefs_no_card"][:10],
+                    )
+                if diag["dropped_hrefs_no_flexrow"]:
+                    logger.warning(
+                        "Page %d: dropped %d links (no flexRow ancestor): %s",
+                        page_num,
+                        len(diag["dropped_hrefs_no_flexrow"]),
+                        diag["dropped_hrefs_no_flexrow"][:10],
+                    )
+                if diag["dropped_hrefs_short_text"]:
+                    logger.warning(
+                        "Page %d: dropped %d links (short text): %s",
+                        page_num,
+                        len(diag["dropped_hrefs_short_text"]),
+                        diag["dropped_hrefs_short_text"][:10],
+                    )
 
                 for listing in page_listings:
                     lid = listing.get("listing_id")
@@ -430,13 +498,34 @@ def _extract_page_listings(page: Page) -> list[dict]:
     The card data lives in a flexRow parent container (@lg:flex-row) that
     contains the address, price, living area, rooms, and energy label.
 
+    Funda uses two card templates:
+    1. Standard cards: link → relative/overflow-hidden card → @lg:flex-row
+    2. Promoted/featured cards: link → parent div with no wrapper classes,
+       but the parent's innerText contains the listing data directly.
+
     We deduplicate by listing_id in the caller.
+
+    Returns a tuple of (listings, diagnostics) where diagnostics is a dict
+    with per-stage counts for debugging listing loss.
     """
     raw = page.evaluate("""
         () => {
             const results = [];
             const allLinks = document.querySelectorAll('a[href*="/detail/koop/"]');
             const seen = new Set();
+
+            const diag = {
+                total_links: allLinks.length,
+                after_href_dedup: 0,
+                dropped_no_card: 0,
+                dropped_no_flexrow: 0,
+                fallback_used: 0,
+                dropped_short_text: 0,
+                results: 0,
+                dropped_hrefs_no_card: [],
+                dropped_hrefs_no_flexrow: [],
+                dropped_hrefs_short_text: [],
+            };
 
             allLinks.forEach(link => {
                 const href = link.getAttribute('href');
@@ -450,8 +539,10 @@ def _extract_page_listings(page: Page) -> list[dict]:
                 // nearly identical across different listings.
                 if (seen.has(href)) return;
                 seen.add(href);
+                diag.after_href_dedup++;
                 
-                // Find the card container (relative overflow-hidden)
+                // Try standard path: find the card container (relative overflow-hidden)
+                // then the flexRow parent that contains the listing data.
                 let parent = link.parentElement;
                 let card = null;
                 for (let d = 0; d < 15; d++) {
@@ -463,45 +554,73 @@ def _extract_page_listings(page: Page) -> list[dict]:
                     }
                     parent = parent.parentElement;
                 }
-                if (!card) return;
                 
-                // Find the flexRow parent that contains the card data
-                let flexRow = card.parentElement;
-                if (flexRow && flexRow.className && 
-                    flexRow.className.indexOf('@lg:flex-row') !== -1) {
-                    // Found it
-                } else {
-                    let el = card.parentElement;
-                    for (let d = 0; d < 10; d++) {
-                        if (!el) break;
-                        if (el.className && 
-                            el.className.indexOf('@lg:flex-row') !== -1) {
-                            flexRow = el;
-                            break;
+                let text = null;
+                
+                if (card) {
+                    // Standard path: find the flexRow parent
+                    let flexRow = card.parentElement;
+                    if (flexRow && flexRow.className && 
+                        flexRow.className.indexOf('@lg:flex-row') !== -1) {
+                        // Found it
+                    } else {
+                        let el = card.parentElement;
+                        for (let d = 0; d < 10; d++) {
+                            if (!el) break;
+                            if (el.className && 
+                                el.className.indexOf('@lg:flex-row') !== -1) {
+                                flexRow = el;
+                                break;
+                            }
+                            el = el.parentElement;
                         }
-                        el = el.parentElement;
+                    }
+                    
+                    if (flexRow) {
+                        text = flexRow.innerText.trim();
+                    } else {
+                        diag.dropped_no_flexrow++;
+                        diag.dropped_hrefs_no_flexrow.push(href);
+                        return;
+                    }
+                } else {
+                    // Promoted/featured card fallback: no relative/overflow-hidden
+                    // wrapper. The link's parent div itself contains the listing text.
+                    diag.dropped_no_card++;
+                    diag.dropped_hrefs_no_card.push(href);
+                    
+                    const lp = link.parentElement;
+                    if (lp) {
+                        const lpText = lp.innerText.trim();
+                        // Accept if it has a price and enough content
+                        if (lpText && lpText.length >= 10 && lpText.includes('\u20ac')) {
+                            text = lpText;
+                            diag.fallback_used++;
+                        }
                     }
                 }
                 
-                if (!flexRow) return;
+                if (!text || text.length < 10) {
+                    diag.dropped_short_text++;
+                    diag.dropped_hrefs_short_text.push(href);
+                    return;
+                }
                 
-                const text = flexRow.innerText.trim();
-                if (!text || text.length < 10) return;
-                
+                diag.results++;
                 results.push({ href, text });
             });
 
-            return results;
+            return { results, diag };
         }
     """)
 
     listings = []
-    for item in raw:
+    for item in raw["results"]:
         data = _extract_listing_data(item["text"], item["href"])
         if data:
             listings.append(data)
 
-    return listings
+    return listings, raw["diag"]
 
 
 def _dismiss_cookie_banner(page: Page) -> None:
