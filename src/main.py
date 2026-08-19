@@ -6,7 +6,7 @@ import logging
 import random
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import FilterConfig
@@ -21,6 +21,7 @@ from .storage import (
     mark_as_notified,
     get_filter_snapshot,
     save_filter_snapshot,
+    get_last_successful_run,
 )
 from .notifier import send_notifications, send_failure_alert, send_listing_notification
 
@@ -87,6 +88,33 @@ def main() -> None:
             "First run after filter change detected. "
             "New listings will be score-gated at 70 on this run only."
         )
+
+    # --- Detect run staleness (Task 3 — visibility only, no gating yet) ---
+    last_successful_run = get_last_successful_run(db_path)
+    is_stale_fallback = True
+    if last_successful_run is None:
+        logger.info("Run health: last_successful_run is None (never recorded).")
+        is_stale_fallback = True
+    else:
+        try:
+            parsed = datetime.fromisoformat(last_successful_run)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            elapsed = run_start - parsed
+            is_stale_fallback = elapsed > timedelta(days=3)
+            logger.info(
+                "Run health: last_successful_run=%s (elapsed=%.1fd) -> stale=%s",
+                last_successful_run,
+                elapsed.total_seconds() / 86400,
+                is_stale_fallback,
+            )
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "Run health: could not parse last_successful_run=%r: %s — "
+                "treating as stale.",
+                last_successful_run, exc,
+            )
+            is_stale_fallback = True
 
     # --- Logging setup ---
     log_dir = Path(__file__).resolve().parent.parent / "logs"

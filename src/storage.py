@@ -380,6 +380,50 @@ def save_filter_snapshot(
         raise
 
 
+def get_last_successful_run(db_path: Path | str = DEFAULT_DB_PATH) -> str | None:
+    """Return the stored ISO-8601 timestamp of the last successful run,
+    or ``None`` if no run has been recorded yet.
+    """
+    db_path = Path(db_path)
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            _ensure_metadata_table(conn)
+            cursor = conn.execute(
+                "SELECT value FROM scraper_metadata WHERE key = ?;",
+                ("last_successful_run",),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return row[0]
+    except sqlite3.Error as e:
+        logger.exception(
+            "Failed to read last_successful_run at %s: %s", db_path, e,
+        )
+        raise
+
+
+def save_last_successful_run(
+    timestamp: datetime, db_path: Path | str = DEFAULT_DB_PATH,
+) -> None:
+    """Persist an ISO-8601 UTC timestamp under key 'last_successful_run'."""
+    db_path = Path(db_path)
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            _ensure_metadata_table(conn)
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO scraper_metadata (key, value) "
+                    "VALUES ('last_successful_run', ?);",
+                    (timestamp.isoformat(),),
+                )
+    except sqlite3.Error as e:
+        logger.exception(
+            "Failed to save last_successful_run at %s: %s", db_path, e,
+        )
+        raise
+
+
 def listing_exists(listing_id: str, db_path: Path | str = DEFAULT_DB_PATH) -> bool:
     """
     Checks if a listing with the given listing_id already exists in the database.
