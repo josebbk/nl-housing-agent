@@ -141,15 +141,30 @@ for secrets and is not used for filter configuration.
 
 ### Optional Phase 2 preference filters
 
-Three optional preferences can be configured on top of the base filters:
+The base filters above can be narrowed with optional preferences configured in
+`config/filters.json`. They fall into two groups:
+
+**Ranged filters (each has a `_min` and `_max` key):**
+
+* **bedrooms** — `bedrooms_min` (≥3 default) and `bedrooms_max`.
+* **living_area** — `living_area_min` (≥100 m² default) and
+  `living_area_max`.
+* **rooms** — `rooms_min` and `rooms_max` (total rooms, search-level only).
+* **plot_size** — `plot_size_min` and `plot_size_max` (m²).
+* **energy_label** — `energy_label_min` and `energy_label_max`, G (lowest) →
+  A++++ (highest).
+
+**Single-value filters:**
 
 * **property_type** — only listings of this type match (e.g. `appartement`).
-* **plot_size_min** — minimum plot size in m².
-* **energy_label_min** — minimum energy label, G (lowest) → A++++ (highest).
+* **transaction_type** — `koop` (for sale, the default) or `huur` (rent).
+* **radius_km** — a search radius in kilometres around Amsterdam.
+* **construction_type** — exact construction type, `existing` or `new`.
 
 When a preference is unset (`null` in `config/filters.json`), it imposes no
-restriction. A listing whose optional field is NULL never satisfies an
-enabled preference filter.
+restriction. For ranged filters a `null` bound leaves that side open-ended.
+A listing whose optional field is NULL never satisfies an enabled preference
+filter.
 
 ### Resolution of Price Range Requirement
 

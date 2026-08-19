@@ -160,18 +160,30 @@ config/filters.json
 
 Its keys control the housing search criteria:
 
-| Key                | Type       | Default | Meaning                                     |
-| ------------------ | ---------- | ------- | ------------------------------------------- |
-| `price_min`        | int        | 550000  | Minimum asking price (€)                    |
-| `price_max`        | int        | 750000  | Maximum asking price (€)                    |
-| `bedrooms_min`     | int        | 3       | Minimum bedrooms                            |
-| `living_area_min`  | int        | 100     | Minimum living area (m²)                    |
-| `property_type`    | str / null | none    | Required property type, e.g. `appartement`  |
-| `plot_size_min`    | int / null | none    | Minimum plot size (m²)                      |
-| `energy_label_min` | str / null | none    | Minimum energy label, e.g. `B`              |
+| Key                  | Type       | Default | Meaning                                     |
+| -------------------- | ---------- | ------- | ------------------------------------------- |
+| `price_min`          | int        | 550000  | Minimum asking price (€)                    |
+| `price_max`          | int        | 750000  | Maximum asking price (€)                    |
+| `bedrooms_min`       | int        | 3       | Minimum bedrooms                            |
+| `bedrooms_max`       | int / null | none    | Maximum bedrooms                            |
+| `living_area_min`    | int        | 100     | Minimum living area (m²)                    |
+| `living_area_max`    | int / null | none    | Maximum living area (m²)                    |
+| `rooms_min`          | int / null | none    | Minimum total rooms                         |
+| `rooms_max`          | int / null | none    | Maximum total rooms                         |
+| `plot_size_min`      | int / null | none    | Minimum plot size (m²)                      |
+| `plot_size_max`      | int / null | none    | Maximum plot size (m²)                      |
+| `property_type`      | str / null | none    | Required property type, e.g. `appartement`  |
+| `energy_label_min`   | str / null | none    | Minimum energy label, e.g. `B`              |
+| `energy_label_max`   | str / null | none    | Maximum energy label, e.g. `C`              |
+| `transaction_type`   | str / null | none    | `koop` (for sale) or `huur` (rent)          |
+| `radius_km`          | int / null | none    | Search radius (km) around the area          |
+| `construction_type`  | str / null | none    | Exact construction type: `existing`/`new`   |
 
 The `null` optional values mean "no preference filter". Missing keys fall
 back to the Phase 1 defaults (€550,000–€750,000, ≥3 bedrooms, ≥100 m²).
+Ranged filters accept `_min`/`_max` pairs; a `null` bound leaves that side
+open-ended. `rooms_min`/`rooms_max`, `radius_km`, and `construction_type` are
+applied to the Funda search URL only (not the local matching query).
 Invalid values or unknown keys cause the run to fail loudly rather than being
 silently coerced. The file is resolved from the project root regardless of the
 working directory, so cron/systemd/tmux execution finds it automatically. See

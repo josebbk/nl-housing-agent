@@ -537,26 +537,59 @@ The default file is committed with the Phase 1 values:
   "price_min": 550000,
   "price_max": 750000,
   "bedrooms_min": 3,
+  "bedrooms_max": null,
   "living_area_min": 100,
-  "property_type": null,
+  "living_area_max": null,
+  "rooms_min": null,
+  "rooms_max": null,
   "plot_size_min": null,
-  "energy_label_min": null
+  "plot_size_max": null,
+  "property_type": null,
+  "energy_label_min": null,
+  "energy_label_max": null,
+  "transaction_type": null,
+  "radius_km": null,
+  "construction_type": null
 }
 ```
 
-| Key               | Type       | Default | Meaning                                     |
-| ----------------- | ---------- | ------- | ------------------------------------------- |
-| `price_min`       | int        | 550000  | Minimum asking price (€)                    |
-| `price_max`       | int        | 750000  | Maximum asking price (€)                    |
-| `bedrooms_min`    | int        | 3       | Minimum bedrooms                            |
-| `living_area_min` | int        | 100     | Minimum living area (m²)                    |
-| `property_type`   | str / null | none    | Required property type, e.g. `appartement`  |
-| `plot_size_min`   | int / null | none    | Minimum plot size (m²)                      |
-| `energy_label_min`| str / null | none    | Minimum energy label, e.g. `B`              |
+| Key                 | Type       | Default | Meaning                                     |
+| ------------------- | ---------- | ------- | ------------------------------------------- |
+| `price_min`         | int        | 550000  | Minimum asking price (€)                    |
+| `price_max`         | int        | 750000  | Maximum asking price (€)                    |
+| `bedrooms_min`      | int        | 3       | Minimum bedrooms                            |
+| `bedrooms_max`      | int / null | none    | Maximum bedrooms                            |
+| `living_area_min`   | int        | 100     | Minimum living area (m²)                    |
+| `living_area_max`   | int / null | none    | Maximum living area (m²)                    |
+| `rooms_min`         | int / null | none    | Minimum total rooms                         |
+| `rooms_max`         | int / null | none    | Maximum total rooms                         |
+| `plot_size_min`     | int / null | none    | Minimum plot size (m²)                      |
+| `plot_size_max`     | int / null | none    | Maximum plot size (m²)                      |
+| `property_type`     | str / null | none    | Required property type, e.g. `appartement`  |
+| `energy_label_min`  | str / null | none    | Minimum energy label, e.g. `B`              |
+| `energy_label_max`  | str / null | none    | Maximum energy label, e.g. `C`              |
+| `transaction_type`  | str / null | none    | `koop` (for sale) or `huur` (rent)          |
+| `radius_km`         | int / null | none    | Search radius (km) around the area          |
+| `construction_type` | str / null | none    | Exact construction type: `existing`/`new`   |
 
 The `null` optional values mean "no preference filter". Missing keys fall
 back to the defaults shown above. Unknown keys are rejected so a typo cannot
 silently change behavior.
+
+**Ranged vs single-value filters.** Most numeric filters are **ranged**
+(`*_min` / `*_max` pairs). On the search URL a bound set to `null` is
+open-ended (e.g. `floor_area=100-` when only `living_area_min` is set).
+On the storage query a `null` bound disables that side of the range.
+
+Three filters are **single-value** (no range makes sense):
+
+* `transaction_type` — maps to Funda's offering type (`koop`/`huur`).
+  When unset the scraper defaults to `koop`, preserving for-sale behavior.
+* `radius_km` — a single positive integer. When set, Funda encodes it
+  inside `selected_area` as a JSON array (`["amsterdam,{N}km"]`), which is
+  URL-encoded by the scraper.
+* `construction_type` — an exact-match categorical value (`existing` or
+  `new`). Set to `null` for no restriction.
 
 ### `src/config.py` — FilterConfig
 
@@ -567,9 +600,18 @@ class FilterConfig:
     price_max: int
     bedrooms_min: int
     living_area_min: int
-    property_type: str | None = None
+    bedrooms_max: int | None = None
+    living_area_max: int | None = None
+    rooms_min: int | None = None
+    rooms_max: int | None = None
     plot_size_min: int | None = None
+    plot_size_max: int | None = None
+    property_type: str | None = None
     energy_label_min: str | None = None
+    energy_label_max: str | None = None
+    transaction_type: str | None = None
+    radius_km: int | None = None
+    construction_type: str | None = None
 ```
 
 * `FilterConfig` is immutable (`frozen=True`); validation runs at
@@ -592,9 +634,16 @@ Validation rules:
 * `price_min <= price_max`
 * numeric minimums (`price_min`, `bedrooms_min`, `living_area_min`,
   `plot_size_min`) must be non-negative
+* for each ranged pair (`bedrooms`, `living_area`, `rooms`, `plot_size`),
+  when both bounds are set the minimum must be `<=` the maximum
+* `radius_km`, when set, must be a positive integer (rejects `0`, negatives,
+  non-integers, and booleans)
+* `transaction_type`, when set, must be `koop` or `huur` (lowercase)
+* `construction_type`, when set, must be `existing` or `new` (lowercase)
 * `property_type`, when set, must be a non-empty string
-* `energy_label_min`, when set, must be a non-empty string and is normalized
-  to uppercase (e.g. `b` → `B`), following the `scoring.py` convention
+* `energy_label_min`/`energy_label_max`, when set, must be a non-empty string
+  and are normalized to uppercase (e.g. `b` → `B`), following the `scoring.py`
+  convention
 * the file must be a JSON object; invalid JSON or an unreadable/missing file
   raises `ValueError`
 
@@ -613,27 +662,38 @@ fetch_unnotified_matching_listings(
   `[price_min, price_max]`, `bedrooms >= bedrooms_min`, and
   `living_area_m2 >= living_area_min`.
 * Optional preferences are applied only when not `None`:
+  * `bedrooms_max` → `bedrooms <= ?`
+  * `living_area_max` → `living_area_m2 <= ?`
   * `property_type` → `property_type = ?` (exact match)
   * `plot_size_min` → `plot_size_m2 >= ?`
-  * `energy_label_min` → `UPPER(energy_label) IN (…)` where the accepted set
-    is every label at least as good as the minimum on the project
-    energy-label scale (`config/preferences.json` → `energy_label_scale`,
+  * `plot_size_max` → `plot_size_m2 <= ?`
+  * `energy_label_min`/`energy_label_max` → `UPPER(energy_label) IN (…)` where
+    the accepted set is every label at least as good as the minimum (and at
+    most as good as the maximum) on the project energy-label scale
+    (`config/preferences.json` → `energy_label_scale`,
     `["G","F","E","D","C","B","A","A+","A++","A+++","A++++"]`, worst → best).
-    A configured minimum that is not on the scale raises `ValueError`.
+    A configured bound that is not on the scale raises `ValueError`.
+* `rooms_min`/`rooms_max`, `radius_km`, and `construction_type` are
+  **search-level** filters: they are applied to the Funda search URL, not the
+  storage query (see `main.py` orchestration below).
 * NULL semantics: a listing with a NULL value for an optional field never
   satisfies an enabled preference filter (standard SQL comparison).
 
 ### `src/main.py` — orchestration integration
 
 * `main()` loads `filters = FilterConfig.from_file()` once at run start.
-* The configured `price_min`, `price_max`, `living_area_min`, and
-  `bedrooms_min` are passed to `scrape_funda(...)`.
+* The **search-level** filters are passed to `scrape_funda(...)`:
+  `price_min`, `price_max`, `living_area_min`/`max`, `bedrooms_min`/`max`,
+  `rooms_min`/`max`, `radius_km`, `construction_type`, and
+  `offering_type` (derived from `transaction_type`, defaulting to `koop`).
 * The same `filters` object is passed to
   `fetch_unnotified_matching_listings(db_path, filters=filters)`, so the
-  storage query uses exactly the loaded configuration.
-* The optional preferences (`property_type`, `plot_size_min`,
-  `energy_label_min`) are storage-level filters and are **not** passed to
-  `scrape_funda()`, which does not accept those parameters.
+  storage query uses exactly the loaded configuration. The **storage-level**
+  filters (`property_type`, `plot_size_min`/`max`, `energy_label_min`/`max`,
+  `bedrooms_max`, `living_area_max`) are applied in the matching query.
+* Search-level filters (`rooms_min`/`max`, `radius_km`, `construction_type`)
+  are **not** passed to the storage query, which does not accept those
+  parameters.
 * All Phase 1 orchestration (init_db, insert, notify, mark-as-notified,
   dry-run, exit codes, logging) is unchanged.
 
