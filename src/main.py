@@ -22,6 +22,7 @@ from .storage import (
     get_filter_snapshot,
     save_filter_snapshot,
     get_last_successful_run,
+    save_last_successful_run,
 )
 from .notifier import send_notifications, send_failure_alert, send_listing_notification
 
