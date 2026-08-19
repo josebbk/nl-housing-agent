@@ -9,6 +9,31 @@ be known.
 
 (newest entries at the top)
 
+### 2026-08-19 — Zero-result total count still scraped all max_pages
+
+- **Symptom:** When the extracted total listing count was genuinely 0
+  (confirmed via log "Total listing count is 0 — scraping 0 pages."),
+  the scraper still fetched and processed all 5 pages instead of stopping
+  after page 1.
+
+- **Diagnosis:** In `scrape_funda()` the `else` branch (triggered when
+  `total_count == 0` or extraction failed) unconditionally set
+  `pages_to_scrape = max_pages` *before* checking whether `total_count == 0`.
+  The log line correctly said "scraping 0 pages" but the variable was
+  already 5, so the `for page_num in range(1, pages_to_scrape + 1)` loop
+  still fetched all pages. The fix separates the two cases: `total_count == 0`
+  sets `pages_to_scrape = 0`, while extraction failure (None) falls back to
+  `max_pages` as before.
+
+- **Fix:** Moved `pages_to_scrape = 0` into the `if total_count == 0`
+  branch and `pages_to_scrape = max_pages` into the `else` (extraction
+  failure) branch, so the two cases are no longer conflated.
+
+- **Pattern/Warning:** When a computed value can be 0 and 0 is a valid
+  "do nothing" result, never use a truthy/falsy check (`if computed_pages:`)
+  to distinguish it from "could not compute" (None). Always check explicitly
+  for `is None` or `== 0` separately.
+
 ### 2026-08-19 — Dynamic page-count detection via "N koopwoningen" text
 
 - **Symptom:** The scraper always scraped 5 pages (max_pages default)
