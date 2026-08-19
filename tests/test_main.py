@@ -17,6 +17,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -48,6 +49,7 @@ sys.modules.setdefault(
 from src import main as main_module  # noqa: E402
 from src import config  # noqa: E402
 from src.config import FilterConfig  # noqa: E402
+from src.storage import save_filter_snapshot, save_last_successful_run  # noqa: E402
 
 
 def listing_data(listing_id="80913842", **overrides):
@@ -81,6 +83,13 @@ class MainOrchestrationTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.db = os.path.join(self._tmp.name, "funda.db")
+        # Save filter snapshot and last_successful_run so scan-mode logic
+        # treats these as delta scans (gating disabled) rather than full
+        # scans.
+        save_filter_snapshot(FilterConfig.from_file(), self.db)
+        save_last_successful_run(
+            datetime.now(timezone.utc), self.db
+        )
 
     def tearDown(self):
         self._tmp.cleanup()

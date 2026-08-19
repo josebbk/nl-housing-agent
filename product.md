@@ -231,7 +231,13 @@ This ensures the owner is alerted when a previously-seen listing becomes
 relevant (price drop into range, or status change to available) without
 generating duplicate notifications for unchanged listings.
 
-### First-run notification gating after a filter change (Task 2)
+### First-run notification gating after a filter change (Task 2 — generalized)
+
+> **Superseded (Task 4):** The gating condition was generalized from
+> "first run after filter change" to "full scan" (`run_is_full_scan`).
+> Gating now also triggers when the last successful run was more than
+> 3 days ago (staleness fallback).  The mechanics (70-point threshold,
+> newly-inserted-only, suppressed listings marked notified=1) are unchanged.
 
 When `config/filters.json` is edited and the scraper is run, the very next
 run must not blast a notification for every listing that suddenly matches
@@ -251,14 +257,38 @@ the new criteria.  Instead:
   into the database during that first run.  Existing (previously stored)
   listings that now match the new filters are **not** treated as new.
 
-* On all subsequent runs (filters unchanged), behaviour is unchanged: a
-  genuinely new listing is notified through the normal existing workflow
-  and marked `notified = 1`.
+* Gating is triggered whenever `run_is_full_scan` is `True`:
+  * **Filter change:** the saved filter snapshot differs from the current
+    filters (or no snapshot exists — first run ever).
+  * **Staleness fallback:** more than 3 days have passed since the last
+    successful run (or no successful run has been recorded).
+  * **Both:** both conditions are true.
+
+* On delta scans (filters unchanged AND last run within 3 days), behaviour
+  is unchanged: all matching unnotified listings are notified normally
+  through the existing workflow.
 
 The filter snapshot used to detect changes is stored in the SQLite database
 in the `scraper_metadata` table (key: `filter_snapshot`).  It is saved after
 each run so that the next run can compare the stored snapshot against the
 currently loaded `FilterConfig`.
+
+### Run summary output
+
+When gating is active, the run summary includes:
+
+```
+  Scan mode:      FULL (filter changed and stale fallback)
+  Full-run gate:  ENABLED
+  Newly suppressed (<70):  3
+  Newly notified (>=70):   2
+```
+
+On a delta scan:
+
+```
+  Scan mode:      DELTA (3-day publication filter)
+```
 
 ---
 

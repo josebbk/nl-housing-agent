@@ -466,11 +466,18 @@ def scrape_funda(
                 if total_count is not None and total_count > 0:
                     computed_pages = (total_count + 14) // 15  # ceil(total / 15)
                     pages_to_scrape = min(max_pages, computed_pages)
-                    logger.info(
-                        "Total listing count: %d → computed pages: %d, "
-                        "scraping %d page(s) (max_pages=%d)",
-                        total_count, computed_pages, pages_to_scrape, max_pages,
-                    )
+                    if computed_pages > max_pages:
+                        logger.warning(
+                            "Total listing count: %d → computed pages: %d, "
+                            "TRUNCATING to max_pages=%d (safety ceiling hit).",
+                            total_count, computed_pages, max_pages,
+                        )
+                    else:
+                        logger.info(
+                            "Total listing count: %d → computed pages: %d, "
+                            "scraping %d page(s) (max_pages=%d)",
+                            total_count, computed_pages, pages_to_scrape, max_pages,
+                        )
                 else:
                     if total_count == 0:
                         pages_to_scrape = 0

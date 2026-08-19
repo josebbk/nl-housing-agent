@@ -76,45 +76,55 @@ def main() -> None:
     # values, shared by the scraper call and the storage matching query below.
     filters = FilterConfig.from_file()
 
-    # --- Detect whether this is the first run after a filter change ---
-    # (Task 2 — first-run-after-filter-change notification gating)
+    # --- Run start timestamp (computed ONCE at top, before any "now" reference) ---
+    run_start = datetime.now(timezone.utc)
+    start_iso = run_start.isoformat()
+
+    # --- Scan-mode detection ---
+    # Combines first-run-after-filter-change detection and staleness fallback
+    # into a single run_is_full_scan decision.
     prev_snapshot = get_filter_snapshot(db_path)
     current_snapshot = filters.__dict__
     is_first_run_after_filter_change = (
         prev_snapshot is None or current_snapshot != prev_snapshot
     )
+
+    last_successful_run_str = get_last_successful_run(db_path)
+    is_stale_fallback = True
+    if last_successful_run_str is not None:
+        try:
+            parsed_last = datetime.fromisoformat(last_successful_run_str)
+            if parsed_last.tzinfo is None:
+                parsed_last = parsed_last.replace(tzinfo=timezone.utc)
+            is_stale_fallback = (
+                run_start - parsed_last > timedelta(days=3)
+            )
+        except (ValueError, TypeError):
+            is_stale_fallback = True
+
+    run_is_full_scan = (
+        is_first_run_after_filter_change or is_stale_fallback
+    )
+
+    # Determine the reason for a full scan (for logging)
+    if run_is_full_scan:
+        reasons = []
+        if is_first_run_after_filter_change:
+            reasons.append("filter changed")
+        if is_stale_fallback:
+            reasons.append("stale fallback (>3 days since last successful run)")
+        reason_str = " and ".join(reasons)
+        logger.info(
+            "SCAN MODE: FULL SCAN — %s", reason_str
+        )
+    else:
+        logger.info("SCAN MODE: DELTA SCAN — filters unchanged, last run within 3 days")
+
     if is_first_run_after_filter_change:
         logger.info(
             "First run after filter change detected. "
             "New listings will be score-gated at 70 on this run only."
         )
-
-    # --- Detect run staleness (Task 3 — visibility only, no gating yet) ---
-    last_successful_run = get_last_successful_run(db_path)
-    is_stale_fallback = True
-    if last_successful_run is None:
-        logger.info("Run health: last_successful_run is None (never recorded).")
-        is_stale_fallback = True
-    else:
-        try:
-            parsed = datetime.fromisoformat(last_successful_run)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            elapsed = run_start - parsed
-            is_stale_fallback = elapsed > timedelta(days=3)
-            logger.info(
-                "Run health: last_successful_run=%s (elapsed=%.1fd) -> stale=%s",
-                last_successful_run,
-                elapsed.total_seconds() / 86400,
-                is_stale_fallback,
-            )
-        except (ValueError, TypeError) as exc:
-            logger.warning(
-                "Run health: could not parse last_successful_run=%r: %s — "
-                "treating as stale.",
-                last_successful_run, exc,
-            )
-            is_stale_fallback = True
 
     # --- Logging setup ---
     log_dir = Path(__file__).resolve().parent.parent / "logs"
@@ -139,10 +149,6 @@ def main() -> None:
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
-    # --- Run metadata ---
-    run_start = datetime.now(timezone.utc)
-    start_iso = run_start.isoformat()
-
     if do_backfill:
         _run_backfill(db_path, filters, dry_run, run_start)
         return
@@ -161,8 +167,10 @@ def main() -> None:
         "skipped_listings": 0,
         "required_field_failures": 0,
         "errors": [],
-        # Task 2 — first-run-after-filter-change gating stats
+        # Scan-mode tracking
+        "run_is_full_scan": run_is_full_scan,
         "is_first_run_after_filter_change": is_first_run_after_filter_change,
+        "is_stale_fallback": is_stale_fallback,
         "newly_suppressed": 0,
         "newly_notified": 0,
     }
@@ -180,7 +188,16 @@ def main() -> None:
         stats["errors"].append(f"DB init: {exc}")
         _send_failure_alert_and_exit(run_start, stats)
 
-    # --- 2. Scrape ---
+    # --- 2. Scrape (scan-mode parameters) ---
+    # Full scan: no publication filter, 5-page cap (existing behaviour).
+    # Delta scan: 3-day publication filter, 15-page safety ceiling.
+    if run_is_full_scan:
+        scan_publication_date_days = None
+        scan_max_pages = 5
+    else:
+        scan_publication_date_days = 3
+        scan_max_pages = 15
+
     try:
         listings = scrape_funda(
             area="amsterdam",
@@ -189,7 +206,8 @@ def main() -> None:
             price_max=filters.price_max,
             floor_area_min=filters.living_area_min,
             bedrooms_min=filters.bedrooms_min,
-            max_pages=5,
+            publication_date_days=scan_publication_date_days,
+            max_pages=scan_max_pages,
         )
         stats["listings_scraped"] = len(listings)
     except Exception as exc:
@@ -319,10 +337,12 @@ def main() -> None:
         final_listings = []
     else:
         # Separate listings into gate-passed and gate-suppressed
+        # Gating applies whenever run_is_full_scan is True (filter change
+        # or staleness fallback), not only on first-run-after-filter-change.
         gate_passed = []
         for listing in scored_listings:
             listing_id = listing.get("listing_id", "?")
-            if (is_first_run_after_filter_change
+            if (run_is_full_scan
                     and listing_id in newly_inserted_ids
                     and listing.get("score") is not None
                     and listing["score"] < gating_threshold):
@@ -384,6 +404,15 @@ def main() -> None:
 
     # --- 7. Summary ---
     _log_run_summary(run_start, stats)
+
+    # --- 8. Persist last_successful_run (only on genuine success) ---
+    # Save the completion timestamp only if no notifications failed.
+    # Failure paths (_send_failure_alert_and_exit) never write this timestamp.
+    if stats["notifications_failed"] == 0:
+        try:
+            save_last_successful_run(datetime.now(timezone.utc), db_path)
+        except Exception as exc:
+            logger.error("Failed to save last_successful_run: %s", exc, exc_info=True)
 
     # A run is failed when a notification could not be delivered; affected
     # listings remain unnotified so a later run retries them safely.
@@ -791,9 +820,21 @@ def _log_run_summary(run_start: datetime, stats: dict) -> None:
     logger.info("  Notified:       %d", stats["notifications_sent"])
     logger.info("  Notify failed:  %d", stats["notifications_failed"])
 
-    # Task 2 — first-run-after-filter-change gating info
-    if stats.get("is_first_run_after_filter_change"):
-        logger.info("  First-run gate: ENABLED (filter changed)")
+    # Scan-mode info
+    if stats.get("run_is_full_scan"):
+        reasons = []
+        if stats.get("is_first_run_after_filter_change"):
+            reasons.append("filter changed")
+        if stats.get("is_stale_fallback"):
+            reasons.append("stale fallback")
+        reason_str = " and ".join(reasons) if reasons else "full scan"
+        logger.info("  Scan mode:      FULL (%s)", reason_str)
+    else:
+        logger.info("  Scan mode:      DELTA (3-day publication filter)")
+
+    # Task 2 / scan-mode gating info — applies whenever run_is_full_scan is True
+    if stats.get("run_is_full_scan"):
+        logger.info("  Full-run gate:  ENABLED")
         logger.info(
             "  Newly suppressed (<70):  %d",
             stats.get("newly_suppressed", 0),

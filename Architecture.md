@@ -131,10 +131,92 @@ The scraper no longer scrapes a fixed number of pages.  Before scraping,
 it fetches page 1 and extracts the total listing count from the rendered
 page text (the "N koopwoningen" line).  The number of pages to scrape is
 computed as `ceil(total_count / 15)` and capped at the `max_pages`
-argument (currently 5).  If the count cannot be extracted, the scraper
-falls back to the caller-provided `max_pages` unchanged — this preserves
-existing behaviour for that fallback path.  See `scraper.py::scrape_funda`
-and `scraper.py::extract_total_listing_count` for implementation details.
+argument.  If the computed page count exceeds `max_pages`, a **WARNING**
+is logged (instead of INFO) to make safety-ceiling hits visible.  If the
+count cannot be extracted, the scraper falls back to the caller-provided
+`max_pages` unchanged — this preserves existing behaviour for that
+fallback path.  See `scraper.py::scrape_funda` and
+`scraper.py::extract_total_listing_count` for implementation details.
+
+---
+
+## Scan Mode — Full Scan vs Delta Scan
+
+The normal (non-backfill, non-seed) run path uses a **scan-mode** decision
+to choose between a full scan and a delta scan.  This affects three things:
+
+1. Which listings are scraped (publication-date filter)
+2. How many pages are scraped (page-count ceiling)
+3. Whether first-run notification gating is applied
+
+### Triggering conditions
+
+At the top of `main()`, `run_start` is computed **once** (before any
+"now" reference).  Then two independent checks run:
+
+1. **Filter-change detection:** `get_filter_snapshot(db_path)` returns the
+   previously saved `FilterConfig.__dict__`.  If the snapshot is `None`
+   (never saved) or differs from the currently loaded filters,
+   `is_first_run_after_filter_change` is `True`.
+
+2. **Staleness detection:** `get_last_successful_run(db_path)` returns an
+   ISO-8601 UTC timestamp of the last successful run.  If it is `None`
+   (never recorded) or if `(run_start - parsed_timestamp) > timedelta(days=3)`,
+   `is_stale_fallback` is `True`.
+
+```python
+run_is_full_scan = is_first_run_after_filter_change or is_stale_fallback
+```
+
+### Four parameter combinations
+
+| `is_first_run_after_filter_change` | `is_stale_fallback` | `run_is_full_scan` | `publication_date_days` | `max_pages` | Gating |
+|---|---|---|---|---|---|
+| True | False | **Full** | `None` (all dates) | 5 | **Enabled** |
+| False | True | **Full** | `None` (all dates) | 5 | **Enabled** |
+| True | True | **Full** | `None` (all dates) | 5 | **Enabled** |
+| False | False | **Delta** | 3 (last 3 days) | 15 | Disabled |
+
+### Safety-ceiling logging
+
+When the computed page count (from total listing count) exceeds the
+`max_pages` argument, `scraper.py` logs a **WARNING** instead of INFO:
+
+```
+Total listing count: 120 → computed pages: 8, TRUNCATING to max_pages=5 (safety ceiling hit).
+```
+
+This makes it obvious if the 5-page full-scan cap or 15-page delta-scan
+ceiling is ever actually being hit.
+
+### Notification gating
+
+When `run_is_full_scan` is `True`, the existing first-run notification
+gating (70-point score threshold for newly inserted listings) is applied.
+This replaces the previous condition which gated only on
+`is_first_run_after_filter_change`.  Gating mechanics are unchanged:
+
+* `score >= 70` → send notification, set `notified = 1`
+* `score < 70` → suppress notification, set `notified = 1`
+
+When `run_is_full_scan` is `False` (delta scan), all matching unnotified
+listings are notified normally — no gating.
+
+### `last_successful_run` write timing
+
+`save_last_successful_run()` is called **only** at the point where the run
+has genuinely completed successfully: after the final summary logging, and
+**only** if `stats["notifications_failed"] == 0`.  The timestamp used is
+`datetime.now(timezone.utc)` (actual completion time), not the original
+`run_start`.  This timestamp is never written inside
+`_send_failure_alert_and_exit()` or on any early-exit failure path (DB init
+failure, scrape failure, 0-listings failure, required-field failures).
+
+### Backfill and seed runs
+
+`_run_backfill()` and `_run_seed()` are **not** modified by this scan-mode
+logic.  They continue to call `scrape_funda(..., max_pages=5)` with no
+`publication_date_days` argument, exactly as before.
 
 ---
 
@@ -374,7 +456,13 @@ This threshold is only applied during backfill. The normal run path
 (not yet implemented with scoring-based filtering) does not use this
 threshold — all matching listings are notified regardless of score.
 
-### First-run-after-filter-change notification gating (Task 2)
+### First-run-after-filter-change notification gating (Task 2 — generalized)
+
+> **Superseded (Task 4):** The gating condition was generalized from
+> `is_first_run_after_filter_change` to `run_is_full_scan`.  The mechanics
+> (70-point threshold, newly-inserted-only, suppressed listings marked
+> notified=1) are unchanged.  See "Scan Mode — Full Scan vs Delta Scan"
+> above for the full scan-mode logic.
 
 When `config/filters.json` is edited, the next scraper run must not
 notification-blast every listing that suddenly matches the new criteria.
@@ -383,23 +471,24 @@ notification-blast every listing that suddenly matches the new criteria.
 EXISTS`) stores the previous filter snapshot as JSON under the key
 `filter_snapshot`.  At run start, `get_filter_snapshot()` compares the
 stored snapshot against the currently loaded `FilterConfig.__dict__`.  If
-absent or different, the run is treated as "first run after filter change."
+absent or different, `is_first_run_after_filter_change` is `True`.
 
 **Gating logic (in `main.py`):**
 
 1. After the normal scrape → insert → detail-page fetch → scoring flow,
    the notification loop checks each scored listing.
-2. For listings where `newly_inserted` is `True` **and** the run is the
-   first after a filter change:
+2. For listings where `newly_inserted` is `True` **and** `run_is_full_scan`
+   is `True` (filter change **or** staleness fallback):
    * `score >= 70` → send notification, set `notified = 1`
    * `score < 70` → suppress notification, set `notified = 1`
 3. After the notification pass completes, `save_filter_snapshot()` writes
    the current `FilterConfig.__dict__` to the metadata table.
 
-**The 70-point threshold** is a fixed value used only for first-run gating.
+**The 70-point threshold** is a fixed value used only for full-run gating.
 It does not alter `score_listing()`, scoring weights, score persistence,
-or normal scoring behaviour.  The normal run path (non-first-run) notifies
-all matching listings through the existing workflow regardless of score.
+or normal scoring behaviour.  The delta-scan run path (non-full-run)
+notifies all matching listings through the existing workflow regardless of
+score.
 
 **Storage:** the `scraper_metadata` table has two columns:
 
@@ -999,16 +1088,22 @@ cron is the Phase 1 starting point.
 A more robust scheduler can be considered in a later phase if operational
 experience demonstrates a need.
 
-### 6. Publication-date filter capability (Task 3 — implemented, unused)
+### 6. Publication-date filter capability (Task 3 — implemented, wired)
 
 `build_search_url()` and `scrape_funda()` in `scraper.py` accept an optional
 `publication_date_days` parameter (values: 1, 3, 5, 10, 30, or None). When
 None the URL output is byte-for-byte identical to the pre-existing behaviour.
 Invalid values raise `ValueError`.
 
-This capability is **not yet wired into any call site** — `main.py` does not
-pass this parameter. A future orchestration task decides when to actually use
-it. The parameter is placed between `price` and `floor_area` in the URL
+This capability **is wired into the normal run path** in `main()`.  The
+scan-mode decision selects the parameter:
+
+* **Full scan** (`run_is_full_scan == True`): `publication_date_days = None`
+  (no publication filter, matches existing behaviour).
+* **Delta scan** (`run_is_full_scan == False`): `publication_date_days = 3`
+  (only listings published within the last 3 days).
+
+The parameter is placed between `price` and `floor_area` in the URL
 parameter order, matching the confirmed real Funda URL example. Query
 parameter order on Funda is treated as order-independent (Funda's search
 endpoint does not depend on parameter ordering).
