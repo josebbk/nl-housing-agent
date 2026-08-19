@@ -58,11 +58,15 @@ class Listing:
 # URL construction
 # ---------------------------------------------------------------------------
 
+_ALLOWED_PUBLICATION_DATES = frozenset({1, 3, 5, 10, 30})
+
+
 def build_search_url(
     area: str = "amsterdam",
     offering_type: str = "koop",
     price_min: Optional[int] = None,
     price_max: Optional[int] = None,
+    publication_date_days: Optional[int] = None,
     floor_area_min: Optional[int] = None,
     bedrooms_min: Optional[int] = None,
     page: int = 1,
@@ -72,6 +76,7 @@ def build_search_url(
     Funda URL format (discovered by loading the site with Playwright):
         https://www.funda.nl/zoeken/{offering_type}?selected_area={area}
         &price={min}-{max}
+        &publication_date={n}       (optional: 1, 3, 5, 10, or 30)
         &floor_area={min}-
         &bedrooms={min}-
         &page={n}
@@ -83,6 +88,14 @@ def build_search_url(
         p_min = price_min if price_min is not None else ""
         p_max = price_max if price_max is not None else ""
         params.append(f"price={p_min}-{p_max}")
+
+    if publication_date_days is not None:
+        if publication_date_days not in _ALLOWED_PUBLICATION_DATES:
+            raise ValueError(
+                f"publication_date_days must be one of "
+                f"{sorted(_ALLOWED_PUBLICATION_DATES)}, got {publication_date_days}"
+            )
+        params.append(f"publication_date={publication_date_days}")
 
     if floor_area_min is not None:
         params.append(f"floor_area={floor_area_min}-")
@@ -358,6 +371,7 @@ def scrape_funda(
     offering_type: str = "koop",
     price_min: Optional[int] = None,
     price_max: Optional[int] = None,
+    publication_date_days: Optional[int] = None,
     floor_area_min: Optional[int] = None,
     bedrooms_min: Optional[int] = None,
     max_pages: int = 5,
@@ -373,6 +387,10 @@ def scrape_funda(
         "koop" (for sale) or "huur" (for rent).
     price_min, price_max : int or None
         Price range in euros.
+    publication_date_days : int or None
+        Publication date filter — only listings published within the last
+        N days. Accepted values: 1, 3, 5, 10, 30.  None (default) means
+        no publication-date filter is applied.
     floor_area_min : int or None
         Minimum living area in m².
     bedrooms_min : int or None
@@ -420,6 +438,7 @@ def scrape_funda(
                 offering_type=offering_type,
                 price_min=price_min,
                 price_max=price_max,
+                publication_date_days=publication_date_days,
                 floor_area_min=floor_area_min,
                 bedrooms_min=bedrooms_min,
                 page=1,
@@ -453,15 +472,13 @@ def scrape_funda(
                         total_count, computed_pages, pages_to_scrape, max_pages,
                     )
                 else:
-                    # total_count == 0 or extraction failed — fall back to
-                    # the caller-provided max_pages.  The "0 listings" failure
-                    # is handled by main.py, not here.
-                    pages_to_scrape = max_pages
                     if total_count == 0:
+                        pages_to_scrape = 0
                         logger.info(
                             "Total listing count is 0 — scraping 0 pages.",
                         )
                     else:
+                        pages_to_scrape = max_pages
                         logger.warning(
                             "Could not extract total listing count from page 1; "
                             "falling back to max_pages=%d.",
@@ -474,6 +491,7 @@ def scrape_funda(
                     offering_type=offering_type,
                     price_min=price_min,
                     price_max=price_max,
+                    publication_date_days=publication_date_days,
                     floor_area_min=floor_area_min,
                     bedrooms_min=bedrooms_min,
                     page=page_num,
