@@ -32,6 +32,15 @@ class FilterConfigDefaultsTestCase(unittest.TestCase):
         self.assertIsNone(DEFAULT_FILTERS.property_type)
         self.assertIsNone(DEFAULT_FILTERS.plot_size_min)
         self.assertIsNone(DEFAULT_FILTERS.energy_label_min)
+        self.assertIsNone(DEFAULT_FILTERS.transaction_type)
+        self.assertIsNone(DEFAULT_FILTERS.bedrooms_max)
+        self.assertIsNone(DEFAULT_FILTERS.living_area_max)
+        self.assertIsNone(DEFAULT_FILTERS.rooms_min)
+        self.assertIsNone(DEFAULT_FILTERS.rooms_max)
+        self.assertIsNone(DEFAULT_FILTERS.plot_size_max)
+        self.assertIsNone(DEFAULT_FILTERS.energy_label_max)
+        self.assertIsNone(DEFAULT_FILTERS.radius_km)
+        self.assertIsNone(DEFAULT_FILTERS.construction_type)
 
     def test_default_path_is_project_root_relative(self):
         expected = Path(__file__).resolve().parent.parent / "config" / "filters.json"
@@ -106,6 +115,137 @@ class FilterConfigFileTestCase(unittest.TestCase):
         self.assertIsNone(filters.property_type)
         self.assertIsNone(filters.plot_size_min)
         self.assertIsNone(filters.energy_label_min)
+        self.assertIsNone(filters.transaction_type)
+
+    def test_missing_new_optional_fields_become_none(self):
+        self._write({"price_min": 550000})
+        filters = FilterConfig.from_file(self.filters_path)
+        for attr in (
+            "bedrooms_max", "living_area_max", "rooms_min", "rooms_max",
+            "plot_size_max", "energy_label_max",
+        ):
+            self.assertIsNone(getattr(filters, attr))
+
+    def test_custom_optional_max_bounds_load(self):
+        self._write({
+            "bedrooms_max": 5,
+            "living_area_max": 160,
+            "rooms_min": 4,
+            "rooms_max": 8,
+            "plot_size_max": 300,
+            "energy_label_max": "C",
+        })
+        filters = FilterConfig.from_file(self.filters_path)
+        self.assertEqual(filters.bedrooms_max, 5)
+        self.assertEqual(filters.living_area_max, 160)
+        self.assertEqual(filters.rooms_min, 4)
+        self.assertEqual(filters.rooms_max, 8)
+        self.assertEqual(filters.plot_size_max, 300)
+        self.assertEqual(filters.energy_label_max, "C")
+
+    def test_energy_label_max_normalized_uppercase(self):
+        self._write({"energy_label_max": "a++"})
+        self.assertEqual(
+            FilterConfig.from_file(self.filters_path).energy_label_max, "A++"
+        )
+
+    def test_invalid_optional_max_type_raises(self):
+        for key, value in [
+            ("bedrooms_max", "5"),
+            ("living_area_max", 160.5),
+            ("rooms_min", True),
+            ("rooms_max", "many"),
+            ("plot_size_max", -1),
+            ("energy_label_max", 5),
+        ]:
+            with self.subTest(key=key, value=value):
+                self._write({key: value})
+                with self.assertRaises(ValueError):
+                    FilterConfig.from_file(self.filters_path)
+
+    def test_min_exceeds_max_raises(self):
+        cases = [
+            {"bedrooms_min": 5, "bedrooms_max": 3},
+            {"living_area_min": 200, "living_area_max": 100},
+            {"rooms_min": 8, "rooms_max": 4},
+            {"plot_size_min": 500, "plot_size_max": 100},
+        ]
+        for values in cases:
+            with self.subTest(values=values):
+                self._write(values)
+                with self.assertRaises(ValueError):
+                    FilterConfig.from_file(self.filters_path)
+
+    # --- radius_km and construction_type ---
+
+    def test_custom_radius_and_construction_type_load(self):
+        self._write({"radius_km": 10, "construction_type": "new"})
+        filters = FilterConfig.from_file(self.filters_path)
+        self.assertEqual(filters.radius_km, 10)
+        self.assertEqual(filters.construction_type, "new")
+
+    def test_construction_type_normalized_lowercase(self):
+        self._write({"construction_type": "EXISTING"})
+        self.assertEqual(
+            FilterConfig.from_file(self.filters_path).construction_type, "existing"
+        )
+
+    def test_null_radius_and_construction_allowed(self):
+        self._write({"radius_km": None, "construction_type": None})
+        filters = FilterConfig.from_file(self.filters_path)
+        self.assertIsNone(filters.radius_km)
+        self.assertIsNone(filters.construction_type)
+
+    def test_missing_radius_and_construction_become_none(self):
+        self._write({"price_min": 550000})
+        filters = FilterConfig.from_file(self.filters_path)
+        self.assertIsNone(filters.radius_km)
+        self.assertIsNone(filters.construction_type)
+
+    def test_invalid_radius_raises(self):
+        for value in ["5", 0, -5, 5.5, True]:
+            with self.subTest(value=value):
+                self._write({"radius_km": value})
+                with self.assertRaises(ValueError):
+                    FilterConfig.from_file(self.filters_path)
+
+    def test_invalid_construction_type_raises(self):
+        for value in ["renovated", "", 5, "NIEUWBOUW"]:
+            with self.subTest(value=value):
+                self._write({"construction_type": value})
+                with self.assertRaises(ValueError):
+                    FilterConfig.from_file(self.filters_path)
+
+    # --- transaction_type ---
+
+    def test_custom_transaction_type_loads(self):
+        self._write({"transaction_type": "huur"})
+        self.assertEqual(
+            FilterConfig.from_file(self.filters_path).transaction_type, "huur"
+        )
+
+    def test_transaction_type_normalized_lowercase(self):
+        self._write({"transaction_type": "KOOP"})
+        self.assertEqual(
+            FilterConfig.from_file(self.filters_path).transaction_type, "koop"
+        )
+
+    def test_null_transaction_type_is_allowed(self):
+        self._write({"transaction_type": None})
+        self.assertIsNone(FilterConfig.from_file(self.filters_path).transaction_type)
+
+    def test_invalid_transaction_type_raises_value_error(self):
+        for value in ["rent", "koopx", "", 5, "VERKOCHT", True]:
+            with self.subTest(value=value):
+                self._write({"transaction_type": value})
+                with self.assertRaises(ValueError):
+                    FilterConfig.from_file(self.filters_path)
+
+    def test_publication_date_is_not_a_filter_key(self):
+        # publication-date behavior must remain untouched and must NOT be a
+        # configurable filter.
+        self.assertNotIn("publication_date", config._FILTER_KEYS)
+        self.assertIn("transaction_type", config._FILTER_KEYS)
 
     # --- Invalid input rejection ---
 
@@ -213,6 +353,54 @@ class FilterConfigConstructionTestCase(unittest.TestCase):
             FilterConfig(price_min=100, price_max=50, bedrooms_min=3, living_area_min=100)
         with self.assertRaises(ValueError):
             FilterConfig(price_min=100, price_max=200, bedrooms_min=-1, living_area_min=100)
+
+    def test_direct_construction_validates_transaction_type(self):
+        with self.assertRaises(ValueError):
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3,
+                         living_area_min=100, transaction_type="rent")
+        self.assertEqual(
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3,
+                         living_area_min=100, transaction_type="huur").transaction_type,
+            "huur",
+        )
+
+    def test_direct_construction_validates_new_ranges(self):
+        with self.assertRaises(ValueError):
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3, living_area_min=100,
+                         bedrooms_max=2)
+        with self.assertRaises(ValueError):
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3, living_area_min=100,
+                         rooms_min=6, rooms_max=3)
+        with self.assertRaises(ValueError):
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3, living_area_min=100,
+                         plot_size_min=500, plot_size_max=100)
+
+    def test_direct_construction_validates_energy_label_max(self):
+        with self.assertRaises(ValueError):
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3,
+                         living_area_min=100, energy_label_max=5)
+        self.assertEqual(
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3,
+                         living_area_min=100, energy_label_max="c").energy_label_max,
+            "C",
+        )
+
+    def test_direct_construction_validates_radius_and_construction(self):
+        with self.assertRaises(ValueError):
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3,
+                         living_area_min=100, radius_km=0)
+        with self.assertRaises(ValueError):
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3,
+                         living_area_min=100, radius_km="10")
+        with self.assertRaises(ValueError):
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3,
+                         living_area_min=100, construction_type="renovated")
+        self.assertEqual(
+            FilterConfig(price_min=100, price_max=200, bedrooms_min=3,
+                         living_area_min=100, radius_km=10,
+                         construction_type="new").construction_type,
+            "new",
+        )
 
 
 if __name__ == "__main__":

@@ -61,6 +61,20 @@ class Listing:
 _ALLOWED_PUBLICATION_DATES = frozenset({1, 3, 5, 10, 30})
 
 
+def _range_param(name: str, lo: Optional[int], hi: Optional[int]) -> Optional[str]:
+    """Build a Funda ``{name}={from}-{to}`` query parameter from a range.
+
+    Either bound may be None (open-ended), matching Funda's convention
+    (e.g. ``floor_area=100-`` for "at least 100", ``3-5`` for a range).
+    Returns None when both bounds are unset.
+    """
+    if lo is None and hi is None:
+        return None
+    lo_s = "" if lo is None else str(lo)
+    hi_s = "" if hi is None else str(hi)
+    return f"{name}={lo_s}-{hi_s}"
+
+
 def build_search_url(
     area: str = "amsterdam",
     offering_type: str = "koop",
@@ -68,7 +82,13 @@ def build_search_url(
     price_max: Optional[int] = None,
     publication_date_days: Optional[int] = None,
     floor_area_min: Optional[int] = None,
+    floor_area_max: Optional[int] = None,
     bedrooms_min: Optional[int] = None,
+    bedrooms_max: Optional[int] = None,
+    rooms_min: Optional[int] = None,
+    rooms_max: Optional[int] = None,
+    radius_km: Optional[int] = None,
+    construction_type: Optional[str] = None,
     page: int = 1,
 ) -> str:
     """Build a Funda search URL with the given filters.
@@ -76,13 +96,25 @@ def build_search_url(
     Funda URL format (discovered by loading the site with Playwright):
         https://www.funda.nl/zoeken/{offering_type}?selected_area={area}
         &price={min}-{max}
-        &publication_date={n}       (optional: 1, 3, 5, 10, or 30)
-        &floor_area={min}-
-        &bedrooms={min}-
+&publication_date={n}       (optional: 1, 3, 5, 10, or 30)
+        &floor_area={min}-{max}
+        &bedrooms={min}-{max}
+        &rooms={min}-{max}
         &page={n}
+
+    When ``radius_km`` is set, Funda encodes the radius inside the location
+    value as a JSON array: ``selected_area=["{area},{radius}km"]``. The whole
+    value is URL-encoded so quotes/brackets/comma are safe for any HTTP client.
+    ``construction_type`` is a categorical exact-match parameter (``existing``
+    or ``new``).
     """
     base = f"https://www.funda.nl/zoeken/{offering_type}"
-    params = [f"selected_area={area}"]
+
+    if radius_km is not None:
+        location = f'["{area},{radius_km}km"]'
+        params = [f"selected_area={urllib.parse.quote(location, safe='')}"]
+    else:
+        params = [f"selected_area={area}"]
 
     if price_min is not None or price_max is not None:
         p_min = price_min if price_min is not None else ""
@@ -97,11 +129,20 @@ def build_search_url(
             )
         params.append(f"publication_date={publication_date_days}")
 
-    if floor_area_min is not None:
-        params.append(f"floor_area={floor_area_min}-")
+    fp = _range_param("floor_area", floor_area_min, floor_area_max)
+    if fp is not None:
+        params.append(fp)
 
-    if bedrooms_min is not None:
-        params.append(f"bedrooms={bedrooms_min}-")
+    bp = _range_param("bedrooms", bedrooms_min, bedrooms_max)
+    if bp is not None:
+        params.append(bp)
+
+    rp = _range_param("rooms", rooms_min, rooms_max)
+    if rp is not None:
+        params.append(rp)
+
+    if construction_type is not None:
+        params.append(f"construction_type={construction_type}")
 
     params.append(f"page={page}")
 
@@ -373,7 +414,13 @@ def scrape_funda(
     price_max: Optional[int] = None,
     publication_date_days: Optional[int] = None,
     floor_area_min: Optional[int] = None,
+    floor_area_max: Optional[int] = None,
     bedrooms_min: Optional[int] = None,
+    bedrooms_max: Optional[int] = None,
+    rooms_min: Optional[int] = None,
+    rooms_max: Optional[int] = None,
+    radius_km: Optional[int] = None,
+    construction_type: Optional[str] = None,
     max_pages: int = 5,
     headless: bool = True,
 ) -> list[dict]:
@@ -393,8 +440,20 @@ def scrape_funda(
         no publication-date filter is applied.
     floor_area_min : int or None
         Minimum living area in m².
+    floor_area_max : int or None
+        Maximum living area in m².
     bedrooms_min : int or None
         Minimum number of bedrooms.
+    bedrooms_max : int or None
+        Maximum number of bedrooms.
+    rooms_min : int or None
+        Minimum number of rooms.
+    rooms_max : int or None
+        Maximum number of rooms.
+    radius_km : int or None
+        Search radius in kilometres around the area (None = no radius).
+    construction_type : str or None
+        Exact construction type: "existing" or "new" (None = no restriction).
     max_pages : int
         Maximum pages to scrape (default 5, ~150 listings).
     headless : bool
@@ -440,7 +499,13 @@ def scrape_funda(
                 price_max=price_max,
                 publication_date_days=publication_date_days,
                 floor_area_min=floor_area_min,
+                floor_area_max=floor_area_max,
                 bedrooms_min=bedrooms_min,
+                bedrooms_max=bedrooms_max,
+                rooms_min=rooms_min,
+                rooms_max=rooms_max,
+                radius_km=radius_km,
+                construction_type=construction_type,
                 page=1,
             )
             logger.info("Fetching page 1 to detect total listing count: %s", page1_url)
@@ -500,7 +565,13 @@ def scrape_funda(
                     price_max=price_max,
                     publication_date_days=publication_date_days,
                     floor_area_min=floor_area_min,
+                    floor_area_max=floor_area_max,
                     bedrooms_min=bedrooms_min,
+                    bedrooms_max=bedrooms_max,
+                    rooms_min=rooms_min,
+                    rooms_max=rooms_max,
+                    radius_km=radius_km,
+                    construction_type=construction_type,
                     page=page_num,
                 )
 

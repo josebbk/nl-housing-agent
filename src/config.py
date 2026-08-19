@@ -34,10 +34,19 @@ _FILTER_KEYS = (
     "price_min",
     "price_max",
     "bedrooms_min",
+    "bedrooms_max",
     "living_area_min",
-    "property_type",
+    "living_area_max",
+    "rooms_min",
+    "rooms_max",
     "plot_size_min",
+    "plot_size_max",
+    "property_type",
     "energy_label_min",
+    "energy_label_max",
+    "transaction_type",
+    "radius_km",
+    "construction_type",
 )
 
 
@@ -54,9 +63,18 @@ class FilterConfig:
     price_max: int
     bedrooms_min: int
     living_area_min: int
-    property_type: str | None = None
+    bedrooms_max: int | None = None
+    living_area_max: int | None = None
+    rooms_min: int | None = None
+    rooms_max: int | None = None
     plot_size_min: int | None = None
+    plot_size_max: int | None = None
+    property_type: str | None = None
     energy_label_min: str | None = None
+    energy_label_max: str | None = None
+    transaction_type: str | None = None
+    radius_km: int | None = None
+    construction_type: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("price_min", "price_max", "bedrooms_min", "living_area_min"):
@@ -69,18 +87,43 @@ class FilterConfig:
                 f"plot_size_min must be an integer or None, got {self.plot_size_min!r}."
             )
 
+        # Optional numeric min/max fields: must be integers or None, and
+        # non-negative. Range consistency (min <= max) is validated below.
+        for name in (
+            "bedrooms_max",
+            "living_area_max",
+            "rooms_min",
+            "rooms_max",
+            "plot_size_min",
+            "plot_size_max",
+        ):
+            value = getattr(self, name)
+            if value is not None and type(value) is not int:
+                raise ValueError(f"{name} must be an integer or None, got {value!r}.")
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must not be negative, got {value!r}.")
+
         for name in ("price_min", "bedrooms_min", "living_area_min"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must not be negative, got {getattr(self, name)!r}.")
-        if self.plot_size_min is not None and self.plot_size_min < 0:
-            raise ValueError(
-                f"plot_size_min must not be negative, got {self.plot_size_min!r}."
-            )
 
         if self.price_min > self.price_max:
             raise ValueError(
                 f"price_min ({self.price_min}) must not exceed price_max ({self.price_max})."
             )
+
+        for lo_name, hi_name in (
+            ("bedrooms_min", "bedrooms_max"),
+            ("living_area_min", "living_area_max"),
+            ("rooms_min", "rooms_max"),
+            ("plot_size_min", "plot_size_max"),
+        ):
+            lo = getattr(self, lo_name)
+            hi = getattr(self, hi_name)
+            if lo is not None and hi is not None and lo > hi:
+                raise ValueError(
+                    f"{lo_name} ({lo}) must not exceed {hi_name} ({hi})."
+                )
 
         if self.property_type is not None:
             if not isinstance(self.property_type, str) or not self.property_type.strip():
@@ -97,6 +140,53 @@ class FilterConfig:
                 )
             # Follow the project convention (scoring.py): uppercase-normalized.
             object.__setattr__(self, "energy_label_min", self.energy_label_min.strip().upper())
+
+        if self.energy_label_max is not None:
+            if not isinstance(self.energy_label_max, str) or not self.energy_label_max.strip():
+                raise ValueError(
+                    "energy_label_max must be a non-empty string or None, "
+                    f"got {self.energy_label_max!r}."
+                )
+            object.__setattr__(self, "energy_label_max", self.energy_label_max.strip().upper())
+
+        if self.transaction_type is not None:
+            if not isinstance(self.transaction_type, str) or not self.transaction_type.strip():
+                raise ValueError(
+                    "transaction_type must be a non-empty string or None, "
+                    f"got {self.transaction_type!r}."
+                )
+            normalized = self.transaction_type.strip().lower()
+            if normalized not in ("koop", "huur"):
+                raise ValueError(
+                    "transaction_type must be 'koop' or 'huur' (or None), "
+                    f"got {self.transaction_type!r}."
+                )
+            object.__setattr__(self, "transaction_type", normalized)
+
+        if self.radius_km is not None:
+            if type(self.radius_km) is not int:
+                raise ValueError(
+                    f"radius_km must be an integer or None, got {self.radius_km!r}."
+                )
+            if self.radius_km <= 0:
+                raise ValueError(
+                    "radius_km must be a positive number of kilometres, "
+                    f"got {self.radius_km!r}."
+                )
+
+        if self.construction_type is not None:
+            if not isinstance(self.construction_type, str) or not self.construction_type.strip():
+                raise ValueError(
+                    "construction_type must be a non-empty string or None, "
+                    f"got {self.construction_type!r}."
+                )
+            normalized = self.construction_type.strip().lower()
+            if normalized not in ("existing", "new"):
+                raise ValueError(
+                    "construction_type must be 'existing' or 'new' (or None), "
+                    f"got {self.construction_type!r}."
+                )
+            object.__setattr__(self, "construction_type", normalized)
 
     @classmethod
     def from_file(cls, path: Path | str | None = None) -> "FilterConfig":
@@ -133,9 +223,18 @@ class FilterConfig:
             price_max=raw.get("price_max", _PHASE1_PRICE_MAX),
             bedrooms_min=raw.get("bedrooms_min", _PHASE1_BEDROOMS_MIN),
             living_area_min=raw.get("living_area_min", _PHASE1_LIVING_AREA_MIN),
-            property_type=raw.get("property_type"),
+            bedrooms_max=raw.get("bedrooms_max"),
+            living_area_max=raw.get("living_area_max"),
+            rooms_min=raw.get("rooms_min"),
+            rooms_max=raw.get("rooms_max"),
             plot_size_min=raw.get("plot_size_min"),
+            plot_size_max=raw.get("plot_size_max"),
+            property_type=raw.get("property_type"),
             energy_label_min=raw.get("energy_label_min"),
+            energy_label_max=raw.get("energy_label_max"),
+            transaction_type=raw.get("transaction_type"),
+            radius_km=raw.get("radius_km"),
+            construction_type=raw.get("construction_type"),
         )
 
 

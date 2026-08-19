@@ -189,7 +189,7 @@ def main() -> None:
         stats["errors"].append(f"DB init: {exc}")
         _send_failure_alert_and_exit(run_start, stats)
 
-    # --- 2. Scrape (scan-mode parameters) ---
+# --- 2. Scrape (scan-mode parameters) ---
     # Full scan: no publication filter, 5-page cap (existing behaviour).
     # Delta scan: 3-day publication filter, 15-page safety ceiling.
     if run_is_full_scan:
@@ -199,14 +199,24 @@ def main() -> None:
         scan_publication_date_days = 3
         scan_max_pages = 15
 
+    # transaction_type is a search-level filter: it maps to Funda's offering
+    # type (koop = for sale, huur = rent). When unset it defaults to "koop",
+    # preserving the Phase 1 for-sale behavior.
+    offering_type = filters.transaction_type or "koop"
     try:
         listings = scrape_funda(
             area="amsterdam",
-            offering_type="koop",
+            offering_type=offering_type,
             price_min=filters.price_min,
             price_max=filters.price_max,
             floor_area_min=filters.living_area_min,
+            floor_area_max=filters.living_area_max,
             bedrooms_min=filters.bedrooms_min,
+            bedrooms_max=filters.bedrooms_max,
+            rooms_min=filters.rooms_min,
+            rooms_max=filters.rooms_max,
+            radius_km=filters.radius_km,
+            construction_type=filters.construction_type,
             publication_date_days=scan_publication_date_days,
             max_pages=scan_max_pages,
         )

@@ -295,6 +295,103 @@ class MainConfigIntegrationTestCase(unittest.TestCase):
         self.assertEqual(captured["bedrooms_min"], 3)
         self.assertEqual(captured["floor_area_min"], 100)
 
+    def test_default_transaction_type_passes_koop_to_scraper(self):
+        captured = {}
+
+        def fake_scrape(**kwargs):
+            captured.update(kwargs)
+            return [listing_data()]
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "send_notifications", return_value=[True]):
+            run_main([], self.db)
+
+        self.assertEqual(captured["offering_type"], "koop")
+
+    def test_custom_transaction_type_passes_to_scraper(self):
+        self.write_filters({"transaction_type": "huur"})
+
+        captured = {}
+
+        def fake_scrape(**kwargs):
+            captured.update(kwargs)
+            return [listing_data()]
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "send_notifications", return_value=[True]):
+            run_main([], self.db)
+
+        self.assertEqual(captured["offering_type"], "huur")
+
+    def test_default_max_bounds_are_none_in_scraper_call(self):
+        captured = {}
+
+        def fake_scrape(**kwargs):
+            captured.update(kwargs)
+            return [listing_data()]
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "send_notifications", return_value=[True]):
+            run_main([], self.db)
+
+        self.assertIsNone(captured["floor_area_max"])
+        self.assertIsNone(captured["bedrooms_max"])
+        self.assertIsNone(captured["rooms_min"])
+        self.assertIsNone(captured["rooms_max"])
+
+    def test_custom_max_bounds_passed_to_scraper(self):
+        self.write_filters({
+            "living_area_max": 160,
+            "bedrooms_max": 5,
+            "rooms_min": 4,
+            "rooms_max": 8,
+        })
+
+        captured = {}
+
+        def fake_scrape(**kwargs):
+            captured.update(kwargs)
+            return [listing_data()]
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "send_notifications", return_value=[True]):
+            run_main([], self.db)
+
+        self.assertEqual(captured["floor_area_max"], 160)
+        self.assertEqual(captured["bedrooms_max"], 5)
+        self.assertEqual(captured["rooms_min"], 4)
+        self.assertEqual(captured["rooms_max"], 8)
+
+    def test_default_radius_and_construction_type_are_none(self):
+        captured = {}
+
+        def fake_scrape(**kwargs):
+            captured.update(kwargs)
+            return [listing_data()]
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "send_notifications", return_value=[True]):
+            run_main([], self.db)
+
+        self.assertIsNone(captured["radius_km"])
+        self.assertIsNone(captured["construction_type"])
+
+    def test_custom_radius_and_construction_type_passed_to_scraper(self):
+        self.write_filters({"radius_km": 10, "construction_type": "existing"})
+
+        captured = {}
+
+        def fake_scrape(**kwargs):
+            captured.update(kwargs)
+            return [listing_data()]
+
+        with mock.patch.object(main_module, "scrape_funda", side_effect=fake_scrape), \
+             mock.patch.object(main_module, "send_notifications", return_value=[True]):
+            run_main([], self.db)
+
+        self.assertEqual(captured["radius_km"], 10)
+        self.assertEqual(captured["construction_type"], "existing")
+
     def test_custom_config_passes_values_to_scraper(self):
         self.write_filters({
             "price_min": 600000,
