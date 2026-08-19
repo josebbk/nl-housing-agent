@@ -327,24 +327,36 @@ def mark_as_notified(listing_id: str, db_path: Path | str = DEFAULT_DB_PATH) -> 
         logger.exception("Failed to mark listing %s as notified at %s: %s", listing_id, db_path, e)
         raise
 
-def _acceptable_energy_labels(min_label: str) -> list[str]:
-    """Return the energy labels that satisfy ``energy_label_min``.
+def _acceptable_energy_labels(
+    min_label: str | None = None,
+    max_label: str | None = None,
+) -> list[str]:
+    """Return the energy labels that satisfy ``min_label`` .. ``max_label``.
 
     Uses the project-defined ordinal scale from config/preferences.json
     (worst -> best). A listing passes when its energy label is at least as
-    good as ``min_label`` on that scale. Raises ValueError if the configured
-    minimum is not a known label on the scale.
+    good as ``min_label`` and at most as good as ``max_label`` on that scale.
+
+    Only the bounds that are set are enforced. Raises ValueError if a
+    configured bound is not a known label on the scale, or if the min bound
+    is stricter (better) than the max bound.
     """
     with open(_PREFERENCES_PATH) as f:
         scale = json.load(f).get("energy_label_scale", [])
-    try:
-        min_index = scale.index(min_label)
-    except ValueError:
+    for bound, label in (("min", min_label), ("max", max_label)):
+        if label is not None and label not in scale:
+            raise ValueError(
+                f"energy_label_{bound} {label!r} is not a known energy label "
+                f"on the project scale {scale}."
+            )
+    lo = scale.index(min_label) if min_label is not None else 0
+    hi = scale.index(max_label) if max_label is not None else len(scale) - 1
+    if lo > hi:
         raise ValueError(
-            f"energy_label_min {min_label!r} is not a known energy label "
-            f"on the project scale {scale}."
-        ) from None
-    return scale[min_index:]
+            f"energy_label_min {min_label!r} is stricter than "
+            f"energy_label_max {max_label!r} on the project scale."
+        )
+    return scale[lo : hi + 1]
 
 
 def fetch_unnotified_matching_listings(
@@ -360,9 +372,9 @@ def fetch_unnotified_matching_listings(
     - Bedrooms: >= 3
     - Living area: >= 100 m2
 
-    Optional preferences (property_type, plot_size_min, energy_label_min)
-    are only applied when they are not None. NULL optional listing fields
-    never satisfy an enabled preference filter.
+    Optional preferences (property_type, plot_size_min/max, energy_label_min/max,
+    bedrooms_max, living_area_max) are only applied when they are not None.
+    NULL optional listing fields never satisfy an enabled preference filter.
 
     Returns a list of dictionaries representing the matching listings.
     """
@@ -377,8 +389,14 @@ def fetch_unnotified_matching_listings(
     params.append(filters.price_max)
     conditions.append("bedrooms >= ?")
     params.append(filters.bedrooms_min)
+    if filters.bedrooms_max is not None:
+        conditions.append("bedrooms <= ?")
+        params.append(filters.bedrooms_max)
     conditions.append("living_area_m2 >= ?")
     params.append(filters.living_area_min)
+    if filters.living_area_max is not None:
+        conditions.append("living_area_m2 <= ?")
+        params.append(filters.living_area_max)
 
     if filters.property_type is not None:
         conditions.append("property_type = ?")
@@ -387,9 +405,14 @@ def fetch_unnotified_matching_listings(
     if filters.plot_size_min is not None:
         conditions.append("plot_size_m2 >= ?")
         params.append(filters.plot_size_min)
+    if filters.plot_size_max is not None:
+        conditions.append("plot_size_m2 <= ?")
+        params.append(filters.plot_size_max)
 
-    if filters.energy_label_min is not None:
-        acceptable = _acceptable_energy_labels(filters.energy_label_min)
+    if filters.energy_label_min is not None or filters.energy_label_max is not None:
+        acceptable = _acceptable_energy_labels(
+            filters.energy_label_min, filters.energy_label_max
+        )
         placeholders = ", ".join("?" for _ in acceptable)
         conditions.append(f"UPPER(energy_label) IN ({placeholders})")
         params.extend(acceptable)

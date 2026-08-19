@@ -104,14 +104,24 @@ def main() -> None:
         _send_failure_alert_and_exit(run_start, stats)
 
     # --- 2. Scrape ---
+    # transaction_type is a search-level filter: it maps to Funda's offering
+    # type (koop = for sale, huur = rent). When unset it defaults to "koop",
+    # preserving the Phase 1 for-sale behavior.
+    offering_type = filters.transaction_type or "koop"
     try:
         listings = scrape_funda(
             area="amsterdam",
-            offering_type="koop",
+            offering_type=offering_type,
             price_min=filters.price_min,
             price_max=filters.price_max,
             floor_area_min=filters.living_area_min,
+            floor_area_max=filters.living_area_max,
             bedrooms_min=filters.bedrooms_min,
+            bedrooms_max=filters.bedrooms_max,
+            rooms_min=filters.rooms_min,
+            rooms_max=filters.rooms_max,
+            radius_km=filters.radius_km,
+            construction_type=filters.construction_type,
             max_pages=5,
         )
         stats["listings_scraped"] = len(listings)
