@@ -836,7 +836,10 @@ strategy can be revisited if the project's operational requirements grow.
 
 ### Phase 1 recommendation: cron
 
-The initial scheduling recommendation is approximately every 30 minutes.
+> **Superseded (Task 5):** The schedule was changed from approximately every
+> 30 minutes to approximately every 5 hours.
+
+The initial scheduling recommendation is approximately every 5 hours.
 
 Reasoning:
 

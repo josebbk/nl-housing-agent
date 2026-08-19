@@ -201,11 +201,26 @@ Never print the Telegram bot token in logs or terminal output.
 
 If a secret is accidentally committed, stop and treat it as a security incident rather than simply deleting it from the latest commit.
 
-### First-run notification gating after a filter change (Task 2)
+### First-run notification gating after a filter change (Task 2 — generalized)
 
-When you edit `config/filters.json`, the very next scraper run will **not**
-blast a notification for every listing that suddenly matches the new
-criteria.
+> **Superseded (Task 4):** The gating condition was generalized from
+> "first run after filter change" to "full scan" (`run_is_full_scan`).
+> Gating now also triggers when the last successful run was more than
+> 3 days ago (staleness fallback).  The mechanics (70-point threshold,
+> newly-inserted-only, suppressed listings marked notified=1) are unchanged.
+
+When `config/filters.json` is edited or the scraper hasn't run successfully
+in over 3 days, the next scraper run will **not** blast a notification for
+every listing that suddenly matches the criteria.
+
+**What triggers gating:**
+
+Gating is triggered whenever `run_is_full_scan` is `True`:
+* **Filter change:** the saved filter snapshot differs from the current
+  filters (or no snapshot exists — first run ever).
+* **Staleness fallback:** more than 3 days have passed since the last
+  successful run (or no successful run has been recorded).
+* **Both:** both conditions are true.
 
 **What happens:**
 
@@ -230,9 +245,16 @@ gating.
 **Run summary output:** when gating is active, the run summary includes:
 
 ```
-  First-run gate: ENABLED (filter changed)
+  Scan mode:      FULL (filter changed and stale fallback)
+  Full-run gate:  ENABLED
   Newly suppressed (<70):  3
   Newly notified (>=70):   2
+```
+
+On a delta scan:
+
+```
+  Scan mode:      DELTA (3-day publication filter)
 ```
 
 **To change filters:**
@@ -347,7 +369,10 @@ logs/cron.log
 
 The exact cron configuration should be kept simple and documented.
 
-Phase 1 target frequency is approximately every 30 minutes.
+> **Superseded (Task 5):** The target frequency was changed from approximately
+> every 30 minutes to approximately every 5 hours.
+
+Phase 1 target frequency is approximately every 5 hours.
 
 The production scheduler should run the Python application directly rather than depending on:
 
@@ -364,10 +389,13 @@ The AI coding environment must never be required for production execution.
 
 ## 8. Scheduled Execution
 
+> **Superseded (Task 5):** The schedule was changed from every 30 minutes to
+> every 5 hours.
+
 The intended Phase 1 schedule is approximately:
 
 ```text
-Every 30 minutes
+Every 5 hours
 ```
 
 The scraper should:

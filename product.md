@@ -294,8 +294,12 @@ On a delta scan:
 
 ## 10. Scheduling
 
+> **Superseded (Task 5):** The schedule was changed from approximately every
+> 30 minutes to approximately every 5 hours to reduce request frequency and
+> align with the delta-scan model.
+
 The initial intended schedule is periodic checking approximately every
-30 minutes.
+5 hours.
 
 The exact scheduling mechanism is an implementation/operations decision and
 is currently planned to use cron during Phase 1.
