@@ -9,6 +9,38 @@ be known.
 
 (newest entries at the top)
 
+### 2026-08-19 — Dynamic page-count detection via "N koopwoningen" text
+
+- **Symptom:** The scraper always scraped 5 pages (max_pages default)
+  regardless of how many actual listings matched the current filter
+  criteria. For narrow filters returning fewer than 75 listings this
+  wasted requests on empty or near-empty pages 4-5.
+
+- **Diagnosis:** Funda's search results page displays the total matching
+  listing count near the top of the page as plain text in the format
+  "N koopwoningen". Confirmed real examples:
+  * Normal:  "218 koopwoningen"
+  * Low:     "1 koopwoningen"
+  * Zero:    "0 koopwoningen binnen jouw zoekwensen" (different trailing
+    text from the normal case)
+  Each results page contains 15 unique listings (confirmed in prior
+  entries). Formula: pages = ceil(total_count / 15).
+
+- **Fix:** Added `extract_total_listing_count(page_text)` in
+  `scraper.py` that uses regex `(\d[\d.]*)\s+koopwoningen` to extract
+  the count from `document.body.innerText`. Dutch thousands-separator
+  dots are stripped (same convention as `parse_price()`). If extraction
+  fails or returns None, the scraper falls back to the caller-provided
+  `max_pages` unchanged. `scrape_funda()` now does a preliminary fetch
+  of page 1, extracts the count, computes `computed_pages = ceil(total / 15)`,
+  and scrapes `min(max_pages, computed_pages)` pages total.
+
+- **Pattern/Warning:** The "N koopwoningen" text is part of Funda's
+  rendered page body text (not a CSS selector), so it is stable across
+  DOM changes. However, if Funda changes the Dutch wording (e.g. to
+  "resultaten" or English), the regex will silently fail and fall back
+  to max_pages. Monitor for sudden increases in page requests per run.
+
 ### 2026-08-18 — Detail-page fields erased by card-only re-inserts (storage.py)
 
 - **Symptom:** On the first scraper run, a listing's Phase-2 detail-page

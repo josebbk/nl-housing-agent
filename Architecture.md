@@ -125,6 +125,17 @@ A normal scraper run should follow this general sequence:
 Scraping and notification should remain separate phases of a run so that
 scraping failures and notification failures are easier to diagnose.
 
+### Pagination — dynamic page count
+
+The scraper no longer scrapes a fixed number of pages.  Before scraping,
+it fetches page 1 and extracts the total listing count from the rendered
+page text (the "N koopwoningen" line).  The number of pages to scrape is
+computed as `ceil(total_count / 15)` and capped at the `max_pages`
+argument (currently 5).  If the count cannot be extracted, the scraper
+falls back to the caller-provided `max_pages` unchanged — this preserves
+existing behaviour for that fallback path.  See `scraper.py::scrape_funda`
+and `scraper.py::extract_total_listing_count` for implementation details.
+
 ---
 
 ## Phase 2 — Detail-Page Scraping & Scoring

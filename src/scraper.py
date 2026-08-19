@@ -152,6 +152,42 @@ def parse_price(text: str) -> tuple[Optional[int], str]:
 
 
 # ---------------------------------------------------------------------------
+# Total listing count extraction
+# ---------------------------------------------------------------------------
+
+_TOTAL_COUNT_RE = re.compile(
+    r"(\d[\d.]*)\s+koopwoningen"
+)
+
+
+def extract_total_listing_count(page_text: str) -> Optional[int]:
+    """Extract the total listing count from Funda search results page text.
+
+    Handles confirmed text formats found on Funda:
+
+    * Normal/low count:  "218 koopwoningen"  → 218
+    * Low count:         "1 koopwoningen"    → 1
+    * Zero count:        "0 koopwoningen binnen jouw zoekwensen"  → 0
+
+    Uses the same thousands-separator convention as price parsing:
+    dots are stripped before int() conversion (e.g. "1.234" → 1234).
+
+    Returns None if the count cannot be parsed.  Callers must handle this
+    as a fallback — never fail the run over this.
+    """
+    m = _TOTAL_COUNT_RE.search(page_text)
+    if not m:
+        return None
+    raw = m.group(1).replace(".", "")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Listing extraction from DOM text
 # ---------------------------------------------------------------------------
 
@@ -378,7 +414,61 @@ def scrape_funda(
 
             page = context.new_page()
 
-            for page_num in range(1, max_pages + 1):
+            # --- Determine dynamic page count from page 1 ---
+            page1_url = build_search_url(
+                area=area,
+                offering_type=offering_type,
+                price_min=price_min,
+                price_max=price_max,
+                floor_area_min=floor_area_min,
+                bedrooms_min=bedrooms_min,
+                page=1,
+            )
+            logger.info("Fetching page 1 to detect total listing count: %s", page1_url)
+
+            try:
+                page1_html = _fetch_page_html(page1_url, timeout=30)
+            except Exception as exc:
+                logger.error("HTTP fetch failed on page 1: %s", exc)
+                pages_to_scrape = max_pages
+            else:
+                data_url = "data:text/html," + urllib.parse.quote(page1_html)
+                page.goto(data_url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(random.uniform(3000, 5000))
+                _dismiss_cookie_banner(page)
+                page.wait_for_timeout(random.uniform(2000, 4000))
+
+                # Extract total count from the rendered page text.
+                # This uses the same page-text source (document.body.innerText)
+                # that _extract_page_listings already works with.
+                page_text = page.evaluate("() => document.body.innerText")
+                total_count = extract_total_listing_count(page_text)
+
+                if total_count is not None and total_count > 0:
+                    computed_pages = (total_count + 14) // 15  # ceil(total / 15)
+                    pages_to_scrape = min(max_pages, computed_pages)
+                    logger.info(
+                        "Total listing count: %d → computed pages: %d, "
+                        "scraping %d page(s) (max_pages=%d)",
+                        total_count, computed_pages, pages_to_scrape, max_pages,
+                    )
+                else:
+                    # total_count == 0 or extraction failed — fall back to
+                    # the caller-provided max_pages.  The "0 listings" failure
+                    # is handled by main.py, not here.
+                    pages_to_scrape = max_pages
+                    if total_count == 0:
+                        logger.info(
+                            "Total listing count is 0 — scraping 0 pages.",
+                        )
+                    else:
+                        logger.warning(
+                            "Could not extract total listing count from page 1; "
+                            "falling back to max_pages=%d.",
+                            max_pages,
+                        )
+
+            for page_num in range(1, pages_to_scrape + 1):
                 url = build_search_url(
                     area=area,
                     offering_type=offering_type,
@@ -467,7 +557,7 @@ def scrape_funda(
                 )
 
                 # Anti-bot: random delay between pages
-                if page_num < max_pages:
+                if page_num < pages_to_scrape:
                     delay = random.uniform(2.0, 5.0)
                     logger.info("Waiting %.1fs before next page...", delay)
                     page.wait_for_timeout(int(delay * 1000))
