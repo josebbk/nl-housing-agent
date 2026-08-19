@@ -999,6 +999,20 @@ cron is the Phase 1 starting point.
 A more robust scheduler can be considered in a later phase if operational
 experience demonstrates a need.
 
+### 6. Publication-date filter capability (Task 3 — implemented, unused)
+
+`build_search_url()` and `scrape_funda()` in `scraper.py` accept an optional
+`publication_date_days` parameter (values: 1, 3, 5, 10, 30, or None). When
+None the URL output is byte-for-byte identical to the pre-existing behaviour.
+Invalid values raise `ValueError`.
+
+This capability is **not yet wired into any call site** — `main.py` does not
+pass this parameter. A future orchestration task decides when to actually use
+it. The parameter is placed between `price` and `floor_area` in the URL
+parameter order, matching the confirmed real Funda URL example. Query
+parameter order on Funda is treated as order-independent (Funda's search
+endpoint does not depend on parameter ordering).
+
 ---
 
 ## Architectural Principles
