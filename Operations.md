@@ -344,6 +344,39 @@ Do not delete or recreate it casually because doing so would cause previously se
 
 Any destructive database operation requires explicit approval.
 
+### Stale-listing archival
+
+Every normal run (not `--backfill` or `--seed`) automatically archives
+stale listings.  A listing is considered stale when its `last_seen_at`
+is older than the number of days configured in
+`config/retention.json` (`stale_days`, default 60).
+
+**What happens:** stale listings are moved atomically from `listings` to
+`listings_archive` — the archive table is an exact-schema mirror of
+`listings`.  Archived rows remain directly queryable via SQL for
+historical analysis (e.g. `SELECT * FROM listings_archive WHERE ...`).
+They are **deleted** from the live `listings` table.
+
+**Run summary output:** the summary includes an "Archived" line showing
+how many listings were moved in that run:
+
+```
+  Archived:           3
+```
+
+If no listings are stale, the line shows `Archived: 0`.
+
+**Automatic, no flag needed:** archival runs on every normal run without
+a CLI flag.  It behaves identically in `--dry-run` and normal mode.
+
+**Failure handling:** if archival fails (e.g. SQLite error), the failure
+is logged at ERROR level with `exc_info=True` and the run continues.
+This is **not** the same as the run-correctness failures documented in
+the "Error Handling" section (section 15) — a failed archival does **not**
+fail the run, does **not** set `notified` back to 0 on affected listings,
+and does **not** trigger a Telegram failure alert.  Only notification
+failures and scrape/DB-init failures trigger the Telegram alert.
+
 ---
 
 ## 6. Logs

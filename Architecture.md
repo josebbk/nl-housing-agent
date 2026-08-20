@@ -504,6 +504,84 @@ IF NOT EXISTS`).
 
 ---
 
+## Data Retention & Archival
+
+Listings that are no longer seen in successive scrapes are automatically
+moved from the live `listings` table to a `listings_archive` table to keep
+the live table bounded while preserving data for historical analysis.
+
+### Schema (already implemented — Tasks 1)
+
+* `listings.last_seen_at` (TEXT, nullable ISO-8601) — stamped to "now" on
+  every `insert_listing()` call (both INSERT and UPDATE paths).
+* `listings_archive` — an exact-schema mirror of `listings` (same columns).
+  Rows are moved into it by the archival function, not copied by
+  `insert_listing()`.
+
+### Staleness condition
+
+A listing is stale when:
+
+* `last_seen_at IS NOT NULL` and is older than *now* minus
+  `retention.stale_days`, **or**
+* `last_seen_at IS NULL` and `first_seen_at` is older than the same
+  cutoff (fallback for rows predating the `last_seen_at` column).
+
+The default threshold is **60 days**, configured in
+`config/retention.json` (`stale_days` key, loaded by
+`RetentionConfig.from_file()` — see `src/config.py`).
+
+### Archival function (`storage.archive_stale_listings()`)
+
+`archive_stale_listings(db_path, retention)` performs an atomic archival
+in a single transaction:
+
+1. Counts stale rows matching the staleness condition.
+2. If none, logs an info message and returns `0` (not an error).
+3. Copies matching rows into `listings_archive` via
+   `INSERT OR REPLACE` (handles the edge-case of a listing that was
+   previously archived and reappeared in a scrape).
+4. Logs each archived listing's `listing_id` and `address`.
+5. Deletes the now-archived rows from `listings`.
+6. Returns the count of archived rows.
+
+### Integration in `main()`
+
+The archival step is executed **every normal run**, immediately after
+the filter-snapshot save (step 6) and before the final summary logging
+(step 7).  It is **not** part of `_run_backfill()` or `_run_seed()`.
+
+```
+Step 6: save_filter_snapshot(filters, db_path)
+Step 6.5: archive_stale_listings(db_path, retention)  ← new
+Step 7: _log_run_summary(run_start, stats)
+Step 8: save_last_successful_run(...)
+```
+
+* Runs identically in `--dry-run` and normal mode (like
+  `save_filter_snapshot()`).
+* Wrapped in try/except — a failure is logged via
+  `logger.error(..., exc_info=True)` and the run continues.
+* **Never** triggers `_send_failure_alert_and_exit()` or `sys.exit(1)`.
+  Archival is a best-effort housekeeping step, not a run-correctness
+  requirement.
+* The count is stored in `stats["listings_archived"]` (default 0),
+  logged in the run summary under "Archived".
+
+### Design notes
+
+* This mechanism is **filter-agnostic** and **decoupled from
+  `run_is_full_scan` / filter-change detection**.  It is a staleness-based
+  mechanism, not a filter-context cleanup mechanism.  Whether the run
+  detects a filter change or runs a delta scan, archival proceeds
+  identically based only on `last_seen_at` age.
+* Archived rows remain directly queryable via SQL against the
+  `listings_archive` table for historical analysis (Phase 4).
+* No CLI flag is needed — archival runs automatically on every normal
+  run.
+
+---
+
 ## Phase 2 — Configurable Search Filters
 
 Phase 2 makes the search filter criteria configurable at runtime while

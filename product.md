@@ -448,6 +448,12 @@ Completed:
   `config/filters.json` file via `FilterConfig.from_file()`, applied to the
   Funda search and the storage matching query. The Phase 1 filter values
   remain the defaults.
+* Stale-listing archival: listings not seen in a scrape for
+  `config/retention.json`'s `stale_days` (default 60) are moved to a
+  `listings_archive` table rather than deleted, preserving them for
+  future historical analysis (Phase 4) while keeping the live `listings`
+  table bounded. Independent of filter changes — runs automatically every
+  normal run, not wired into `--backfill` or `--seed`.
 
 Remaining (not yet implemented):
 

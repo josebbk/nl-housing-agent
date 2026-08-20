@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .config import FilterConfig
+from .config import FilterConfig, RetentionConfig
 from .scraper import scrape_funda
 from .detail_scraper import fetch_listing_details
 from .scoring import score_listing, load_preferences
@@ -23,6 +23,7 @@ from .storage import (
     save_filter_snapshot,
     get_last_successful_run,
     save_last_successful_run,
+    archive_stale_listings,
 )
 from .notifier import send_notifications, send_failure_alert, send_listing_notification
 
@@ -76,6 +77,9 @@ def main() -> None:
     # (config/filters.json). This is the single source of truth for filter
     # values, shared by the scraper call and the storage matching query below.
     filters = FilterConfig.from_file()
+
+    # Load retention / stale-listing archival policy.
+    retention = RetentionConfig.from_file()
 
     # --- Run start timestamp (computed ONCE at top, before any "now" reference) ---
     run_start = datetime.now(timezone.utc)
@@ -174,6 +178,7 @@ def main() -> None:
         "is_stale_fallback": is_stale_fallback,
         "newly_suppressed": 0,
         "newly_notified": 0,
+        "listings_archived": 0,
     }
 
     logger.info("=" * 60)
@@ -412,6 +417,17 @@ def main() -> None:
         save_filter_snapshot(filters, db_path)
     except Exception as exc:
         logger.error("Failed to save filter snapshot: %s", exc, exc_info=True)
+
+    # --- 6.5. Stale-listing archival ---
+    # Best-effort housekeeping: move listings whose last_seen_at is older
+    # than retention.stale_days into listings_archive.  Non-fatal — a
+    # failure here is logged but does NOT abort the run or trigger the
+    # failure-alert path.  Runs identically in dry-run and normal mode.
+    try:
+        stats["listings_archived"] = archive_stale_listings(db_path, retention)
+    except Exception as exc:
+        logger.error("Failed to archive stale listings: %s", exc, exc_info=True)
+        stats["listings_archived"] = 0
 
     # --- 7. Summary ---
     _log_run_summary(run_start, stats)
@@ -830,6 +846,7 @@ def _log_run_summary(run_start: datetime, stats: dict) -> None:
     logger.info("  Matching:       %d", stats["matching_listings"])
     logger.info("  Notified:       %d", stats["notifications_sent"])
     logger.info("  Notify failed:  %d", stats["notifications_failed"])
+    logger.info("  Archived:       %d", stats.get("listings_archived", 0))
 
     # Scan-mode info
     if stats.get("run_is_full_scan"):
