@@ -250,33 +250,43 @@ the scraped detail values, resulting in all detail fields being NULL in the data
 
 ### Scoring criteria
 
-The scoring system implements **9 weighted criteria**:
+The scoring system implements **12 weighted criteria**.
+
+The system was originally designed with 9 criteria. Two criteria
+(`living_area` and `rooms`) were added in a prior Phase 2 expansion,
+bringing the total to 11. Most recently, `bathrooms` was removed and
+four new criteria (`garage`, `plot_size`, `balcony`, `heating`) were
+added, bringing the current count to 12.
 
 | # | Criterion | Score source | Data source |
 |---|-----------|-------------|-------------|
 | 1 | `neighborhood_value` | `_score_neighborhood_value` | `detail` (price, living_area_m2, neighborhood_avg_price_m2) |
 | 2 | `ownership` | `_score_ownership` | `detail` (ownership_type, erfpacht_canon_annual) |
 | 3 | `energy_label` | `_score_energy_label` | `detail` (energy_label) |
-| 4 | `living_area` | `_score_living_area` | `detail` (living_area_m2) + `filter_config` (living_area_min) |
-| 5 | `construction_condition` | `_score_construction` | `detail` (year_built, insulation_score) |
-| 6 | `parking` | `_score_parking` | `detail` (parking_type) |
-| 7 | `rooms` | `_score_rooms` | `detail` (rooms) + `filter_config` (bedrooms_min) |
-| 8 | `bathrooms` | `_score_bathrooms` | `detail` (bathrooms) |
-| 9 | `garden` | `_score_garden` | `detail` (garden_present, garden_size_m2, garden_orientation) |
+| 4 | `living_area` | `_score_living_area` | `detail` (living_area_m2) + `filter_config` (living_area_min) + preferences (living_area_thresholds.cap) |
+| 5 | `construction_condition` | `_score_construction` | `detail` (year_built, insulation_score) + preferences (construction_year_range) |
+| 6 | `garage` | `_score_garage` | `detail` (garage_type) |
+| 7 | `parking` | `_score_parking` | `detail` (parking_type) |
+| 8 | `rooms` | `_score_rooms` | `detail` (rooms) + `filter_config` (bedrooms_min) + preferences (rooms_thresholds.cap) |
+| 9 | `plot_size` | `_score_plot_size` | `detail` (plot_size_m2) + preferences (plot_size_thresholds.cap) |
+| 10 | `garden` | `_score_garden` | `detail` (garden_present, garden_size_m2, garden_orientation) |
+| 11 | `heating` | `_score_heating` | `detail` (heating_type) |
+| 12 | `balcony` | `_score_balcony` | `detail` (balcony_present) |
 
-#### New criteria: living_area and rooms
+#### Expansion from 9 to 11 criteria (prior revision)
 
-Two new scoring functions were added in the Phase 2 expansion:
+Two new scoring functions were added in a prior Phase 2 expansion:
 
 - **`_score_living_area(detail, filter_config)`** — linear scale between the
-  configured living-area minimum (floor → 0.0) and a cap (cap → 1.0). When only
-  a minimum is configured (no maximum), cap = floor + 100. If no living-area
-  filter is configured at all, the criterion returns `None` and is excluded from
-  scoring. Threshold defaults documented in
+  configured living-area minimum (floor → 0.0) and a cap (cap → 1.0). When
+  `living_area_thresholds.cap` is absent from preferences, cap = floor + 100.
+  If no living-area filter is configured at all, the criterion returns `None`.
+  Threshold defaults documented in
   `config/preferences.json` → `living_area_thresholds`.
 
 - **`_score_rooms(detail, filter_config)`** — linear scale between the
-  configured bedrooms minimum (floor → 0.0) and cap = max(8, floor + 4).
+  configured bedrooms minimum (floor → 0.0) and cap. If
+  `rooms_thresholds.cap` is absent from preferences, cap = max(8, floor + 4).
   Threshold defaults documented in
   `config/preferences.json` → `rooms_thresholds`.
 
@@ -285,6 +295,104 @@ current filter thresholds from `config/filters.json` via `FilterConfig.from_file
 This creates a dependency on the co-worker's `FilterConfig` work in
 `src/config.py` / `src/storage.py` / `src/main.py`, which is already merged
 into this branch.
+
+#### Further revision to 12 criteria (2026-08-20)
+
+`bathrooms` was removed (empirically non-discriminating — see
+`product.md` §12a). Four new criteria were added using fields already
+extracted by the detail scraper but unused by scoring:
+
+- **`_score_garage(detail)`** — ranked table of 10 garage types (inpandige
+  garage = highest, garage mogelijk = lowest). `garage_type` is `None` is
+  treated as a confirmed negative (0.0) because Funda omits the entire
+  Garage section when no garage exists. Unrecognized values return `None`
+  (missing). Combined "TypeA + TypeB" garage values are handled by scoring
+  only the first segment (see Known limitations).
+- **`_score_plot_size(detail, preferences)`** — linear "more is better"
+  scoring: `plot_size_m2 / cap`, clamped to [0, 1]. `None` returns `None`
+  (missing) since it is ambiguous whether a missing value means "no plot"
+  or a parse failure.
+- **`_score_balcony(detail)`** — binary: 1.0 if `balcony_present` is
+  truthy, 0.0 otherwise. Never returns `None`; falsy values are treated as
+  a confirmed negative (same reasoning as garage — the page field only
+  appears when a balcony exists).
+- **`_score_heating(detail)`** — heat pump = 1.0, district heating = 0.6,
+  gas boiler = 0.3. `None` returns `None` (missing) — every home has some
+  form of heating, so absence is treated as a likely parsing miss.
+
+The ownership formula was changed from a flat 3-tier split to a continuous
+scale based on erfpacht canon amount. The energy-label formula was changed
+from a linear scale to a concave curve (sqrt of normalized index). The
+construction-condition formula was changed from 50/50 year-insulation to
+35% year / 65% insulation, with year bounds sourced from
+`config/preferences.json` instead of being hardcoded.
+
+#### Missing-vs-negative handling per criterion
+
+Certain criteria treat an absent value as a **CONFIRMED NEGATIVE** (the
+score contributes as a real 0 value and is included in the renormalization
+calculation), while others treat absence as **MISSING** (excluded from
+renormalization). The distinction is based on Funda's page structure:
+
+**Confirmed negative on absence** (page reliably omits the section when
+the feature genuinely doesn't exist):
+
+- `garage` — `garage_type` is `None` scores 0.0 (page has no "Garage"
+  section).
+- `balcony` — `balcony_present` is falsy scores 0.0 (page has no
+  "Balkon/dakterras" field).
+
+**Missing on absence** (absence is inconclusive):
+
+- All other criteria (`neighborhood_value`, `ownership`, `energy_label`,
+  `living_area`, `construction_condition`, `parking`, `rooms`, `plot_size`,
+  `garden`). For `garden`: `garden_present` is explicitly `False` scores 0.0
+  (confirmed absence); when the "Tuin" field is not found on the page, the
+  detail scraper returns `None` (missing). For `heating`: every home has
+  some form of heating, so if `heating_type` is `None` it is treated as more
+  likely a parsing miss than a genuine absence.
+
+#### Breakdown reconciliation
+
+Prior to 2026-08-20, the `points_possible` and `points_earned` values in
+the breakdown used raw un-renormalized weights, which meant summing
+`points_earned` across matched criteria did not reproduce the displayed
+score when some criteria were missing. The fix computes
+`points_possible` on the same renormalized scale as the final score:
+
+```python
+points_possible = round(weights[k] / total_weight * 100)  # renormalized
+points_earned = round(points_possible * available[k])
+```
+
+Now the sum of `points_earned` across matched criteria always equals the
+displayed score.
+
+#### Coverage safeguard: partial_major_missing
+
+The `score_listing()` function includes a fourth confidence value —
+`"partial_major_missing"` — as a coverage safeguard. It is set when the
+single highest-weighted criterion (determined dynamically via
+`max(weights, key=weights.get)`, not hardcoded to any specific criterion
+name) is among the missing criteria. This produces a stronger low-confidence
+signal than an ordinary partial score, since the criterion carrying the
+most weight could not be evaluated.
+
+This confidence label does not alter how the numeric score is computed —
+it only affects the confidence flag returned in `ScoreResult`. Because the
+top criterion is determined dynamically from the weight table, the
+safeguard automatically follows whichever criterion currently holds the
+highest weight if the weight table changes in the future.
+
+#### Known limitations
+
+- **Combined parking/garage values:** `parking_type` and `garage_type` can
+  be stored as combined "TypeA + TypeB" strings (documented in
+  `docs/site-notes/funda.md`). Scoring uses only the first segment before
+  "+".
+- **Weight-sum validation:** `config/preferences.json` weights must sum to
+  exactly 100; `_load_preferences()` raises a `ValueError` if they do not
+  (previously logged a warning only).
 
 #### Filter-config dependency
 

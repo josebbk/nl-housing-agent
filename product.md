@@ -361,23 +361,80 @@ product.
 
 ## 12a. Ranking and Scoring
 
+> **Revised (2026-08-20):** This section was updated to reflect the current
+> 12-criterion scoring system. The previous version described 9 criteria
+> (including bathrooms and amenities, which have since been removed). Four
+> new criteria were added: garage, plot size, balcony, and heating type.
+> The ownership and energy-label formulas were also changed to continuous
+> scales rather than discrete tiers.
+
 Every listing that passes the Phase 1 hard filters is scored before
 notification. The score reflects how well a listing matches the owner's
-preferences across nine weighted criteria:
+preferences across twelve weighted criteria:
 
 1. **Neighborhood value** — asking price per m² relative to the
-   neighborhood average.
-2. **Ownership** — full ownership, erfpacht without canon, or erfpacht
-   with an annual canon.
-3. **Energy label** — from G (lowest) to A++++ (highest).
+   neighborhood average. A listing priced significantly below the average
+   scores highest.
+
+2. **Ownership** — whether the property is fully owned or subject to
+   erfpacht (ground lease). Rather than a flat three-tier split, the
+   current implementation uses a continuous scale: full ownership scores
+   highest; erfpacht with no or zero annual canon scores high; erfpacht
+   with a positive canon scales linearly downward as the annual canon
+   increases.
+
+3. **Energy label** — from G (lowest) to A++++ (highest). Lower labels
+   receive disproportionately more weight than higher labels (a concave
+   curve: the score gap between G and F is larger than between A+++ and
+   A++++).
+
 4. **Living area** — how far the listing's living area extends beyond
-   the configured minimum, scaled linearly to a cap of minimum + 100 m².
+   the configured minimum, scaled linearly to a cap defined in
+   `config/preferences.json`.
+
 5. **Construction condition** — building age and insulation quality.
-6. **Parking** — type (private, carport, paid, public).
-7. **Rooms** — total room count relative to the configured bedrooms
-   minimum, scaled linearly with cap = max(8, floor + 4).
-8. **Bathrooms** — count normalized against a maximum.
-9. **Garden** — presence, size, and orientation (south/west bonus).
+   Insulation quality now contributes more to the score than construction
+   year (65% insulation, 35% year). The year bounds are configurable in
+   `config/preferences.json`.
+
+6. **Garage** — presence and type of garage. Funda omits the entire
+   Garage section when a listing has no garage, so a missing
+   garage_type is treated as a confirmed negative (scores as a real 0)
+   rather than missing data. Presence of a dedicated garage (inpandige,
+   aangebouwde, vrijstaande, etc.) scores progressively higher.
+
+7. **Parking** — type of parking arrangement (private carport, own
+   property, permit, paid, public). A combined "TypeA + TypeB" value
+   is handled by scoring only the first segment (a known limitation
+   documented in `docs/site-notes/funda.md`).
+
+8. **Rooms** — total room count relative to the configured bedrooms
+   minimum, scaled linearly to a cap defined in
+   `config/preferences.json`.
+
+9. **Plot size** — the size of the building plot in m², scored linearly
+   with "more is better" up to a configurable cap. A missing value is
+   treated as data unavailable rather than a confirmed negative, since
+   it is ambiguous whether a missing value means "no private plot" or
+   "failed to parse."
+
+10. **Garden** — presence, size, and orientation (south/west bonus).
+    A confirmed absence (garden_present = False) scores 0.
+
+11. **Heating type** — whether the property uses a heat pump, district
+    heating, or gas boiler. Every home has some form of heating; if this
+    field is missing it is treated as likely a parsing miss (data
+    unavailable) rather than a genuine absence of heating.
+
+12. **Balcony** — whether a balcony or rooftop terrace is present.
+    Funda only shows this field when one exists, so a missing value is
+    treated as a confirmed negative (no balcony), mirroring the garage
+    pattern.
+
+**Removed criterion:** "Bathrooms" was removed from scoring. Testing
+showed it provided zero differentiation across sampled real listings —
+all scored identically on bathrooms — making it empirically
+non-discriminating for the Amsterdam market.
 
 Each criterion contributes a weighted subscore. The final score is a
 0–100 number, renormalized so that only criteria with available data
@@ -389,6 +446,11 @@ A confidence flag accompanies each score:
 * **Full** — all criteria have data.
 * **Partial** — some criteria are missing data (the notification
   indicates which ones).
+* **Partial major missing** — the single most heavily-weighted criterion
+  (determined dynamically from the weight table, not hardcoded to a
+  specific criterion name) is among the missing criteria. This is a
+  stronger low-confidence signal than an ordinary partial score, since
+  the criterion carrying the most weight could not be evaluated.
 * **No data** — no scoring data is available (score shown as
   "unavailable").
 

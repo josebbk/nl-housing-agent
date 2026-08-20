@@ -68,3 +68,83 @@ The remaining 9 weights were rebalanced to sum to 100:
 The `amenities_tracked` keyword list was also removed from
 `preferences.json`. The `amenities_raw` and `amenities_matched` database
 columns were dropped (backed up to `data/funda.db.bak.amenities-removal`).
+
+---
+
+## 2026-08-20 — Expanded to 12 criteria, bathrooms removed, new formulas
+
+`bathrooms` was removed from scoring (same finding as the amenities removal:
+empirically non-discriminating across sampled real listings — all scored
+identically on bathrooms).
+
+Four new criteria were added using fields already extracted by the detail
+scraper but unused by scoring:
+
+1. **`garage`** (weight 6) — garage presence and type. The `garage_type`
+   field was already being scraped from detail pages but had no scoring
+   function. Funda omits the entire Garage section when no garage exists,
+   so `garage_type` being `None` is treated as a confirmed negative.
+2. **`plot_size`** (weight 5) — building plot size in m². The
+   `plot_size_m2` field was scraped but unused. Linear "more is better"
+   scoring.
+3. **`balcony`** (weight 1) — balcony/dakterras presence. The
+   `balcony_present` field was scraped but unused. Binary: present or not.
+4. **`heating`** (weight 2) — heating type efficiency. The `heating_type`
+   field was scraped but unused. Heat pump scores highest.
+
+The following formulas were also revised:
+
+- **Ownership:** changed from a flat 3-tier split (1.0 / 0.7 / 0.3) to a
+  continuous scale: full = 1.0; erfpacht with no/zero canon = 0.8; erfpacht
+  with a positive canon scales linearly to 0.0 at canon ≥ €1,000.
+- **Energy label:** changed from a linear scale to a concave curve
+  (sqrt of normalized index), so the score gap between low labels (G→F)
+  is larger than between high labels (A+++→A++++).
+- **Construction condition:** changed from 50/50 year-insulation weighting
+  to 35% year / 65% insulation. Year bounds now sourced from
+  `config/preferences.json` (`construction_year_range`) instead of being
+  hardcoded.
+
+Weight table change (old → new, or NEW / removed):
+
+| Criterion | Old weight | New weight |
+|---|---|---|
+| neighborhood_value | 21 | 20 |
+| ownership | 17 | 15 |
+| energy_label | 14 | 13 |
+| living_area | 12 | 11 |
+| construction_condition | 11 | 10 |
+| parking | 8 | 7 |
+| rooms | 7 | 6 |
+| ~~bathrooms~~ | ~~6~~ | ~~removed~~ |
+| garden | 4 | 4 |
+| ~~amenities~~ | ~~removed~~ | ~~removed~~ |
+| **garage** | — | **6** (NEW) |
+| **plot_size** | — | **5** (NEW) |
+| **balcony** | — | **1** (NEW) |
+| **heating** | — | **2** (NEW) |
+
+Total: 100 points across 12 criteria.
+
+### Coverage safeguard (partial_major_missing)
+
+A fourth confidence value was added to `score_listing()`: `"partial_major_missing"`.
+This is set when the single highest-weighted criterion (determined
+dynamically from the weight table, not hardcoded to a specific name) is
+among the missing criteria. It signals a stronger low-confidence case than
+an ordinary partial score, since the criterion carrying the most weight
+could not be evaluated. This is a confidence-label-only change — it does
+not alter how the numeric score is computed.
+
+### Breakdown reconciliation
+
+The breakdown's `points_possible` and `points_earned` values are now
+computed on the same renormalized scale as the final score, so they
+always sum correctly even when some criteria are missing. Previously
+they used un-renormalized raw weights.
+
+### Weight-sum validation
+
+`_load_preferences()` now raises a `ValueError` (instead of logging a
+warning) if weights in `config/preferences.json` do not sum to exactly
+100.
