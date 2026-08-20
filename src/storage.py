@@ -2,10 +2,10 @@ import json
 import logging
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from .config import DEFAULT_FILTERS, FilterConfig
+from .config import DEFAULT_FILTERS, DEFAULT_RETENTION, FilterConfig, RetentionConfig
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -609,6 +609,88 @@ def fetch_unnotified_matching_listings(
     except sqlite3.Error as e:
         logger.exception("Failed to fetch unnotified matching listings at %s: %s", db_path, e)
         raise
+
+def archive_stale_listings(
+    db_path: Path | str = DEFAULT_DB_PATH,
+    retention: RetentionConfig = DEFAULT_RETENTION,
+) -> int:
+    """Move stale listings from ``listings`` into ``listings_archive``.
+
+    A listing is considered stale when:
+
+    * ``last_seen_at IS NOT NULL`` and is older than *now* minus
+      ``retention.stale_days``, OR
+    * ``last_seen_at IS NULL`` and ``first_seen_at`` is older than that
+      same cutoff (fallback for rows predating the
+      ``last_seen_at`` column).
+
+    Uses a single transaction: copies matching rows into
+    ``listings_archive`` via ``INSERT OR REPLACE``, then deletes them
+    from ``listings``.  Returns the count of archived rows.
+
+    Returns ``0`` (info-level log, no DB mutation) when no listings
+    are stale — this is not an error.
+    """
+    db_path = Path(db_path)
+    cutoff = (datetime.now() - timedelta(
+        days=retention.stale_days,
+    )).isoformat()
+
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            stale_where = (
+                "(last_seen_at IS NOT NULL AND last_seen_at < ?) "
+                "OR (last_seen_at IS NULL AND first_seen_at < ?)"
+            )
+
+            # Count stale rows upfront so we don't depend on
+            # total_changes/rowcount quirks with INSERT OR REPLACE.
+            count = conn.execute(
+                "SELECT COUNT(*) FROM listings WHERE " + stale_where,
+                (cutoff, cutoff),
+            ).fetchone()[0]
+
+            if count == 0:
+                logger.info("No stale listings to archive.")
+                return 0
+
+            with conn:
+                # Copy matching rows into the archive (INSERT OR REPLACE
+                # handles the edge-case of a listing that was previously
+                # archived and reappeared).
+                conn.execute(
+                    "INSERT OR REPLACE INTO listings_archive SELECT * "
+                    "FROM listings WHERE " + stale_where,
+                    (cutoff, cutoff),
+                )
+
+                # Log each archived listing so the operator can audit what
+                # was moved without dumping full row payloads.
+                rows = conn.execute(
+                    "SELECT listing_id, address FROM listings_archive "
+                    "WHERE " + stale_where,
+                    (cutoff, cutoff),
+                ).fetchall()
+                for row in rows:
+                    logger.info(
+                        "Archived stale listing %s (%s).",
+                        row[0], row[1],
+                    )
+
+                # Delete the now-archived rows from the live table.
+                conn.execute(
+                    "DELETE FROM listings WHERE " + stale_where,
+                    (cutoff, cutoff),
+                )
+
+            return count
+
+    except sqlite3.Error as e:
+        logger.exception(
+            "Failed to archive stale listings at %s: %s", db_path, e,
+        )
+        raise
+
 
 if __name__ == "__main__":
     import os
@@ -1722,6 +1804,493 @@ if __name__ == "__main__":
             )
             exit(1)
 
+# ------------------------------------------------------------------
+        # Check 13: archive_stale_listings — stale listing archived (via
+        # direct SQL update of last_seen_at to 90 days ago)
+        # ------------------------------------------------------------------
+        print(
+            "\n--- Check 13: archive_stale_listings — stale listing archived ---"
+        )
+
+        stale_listing = {
+            "listing_id": "archive-stale-1",
+            "url": "https://www.funda.nl/koop/amsterdam/archive-stale-1/",
+            "address": "Archive Stalestraat 1",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+        insert_listing(stale_listing, test_db_path)
+
+        # Backdate last_seen_at to 90 days ago (stale under default 60-day)
+        stale_ts = (datetime.now() - timedelta(days=90)).isoformat()
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.execute(
+            "UPDATE listings SET last_seen_at = ? WHERE listing_id = ?",
+            (stale_ts, "archive-stale-1"),
+        )
+        fresh_conn.commit()
+        fresh_conn.close()
+
+        # Verify it exists and capture row state AFTER backdating
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT listing_id, address, price, living_area_m2, "
+            "bedrooms, property_type, first_seen_at, last_seen_at "
+            "FROM listings WHERE listing_id = ?",
+            ("archive-stale-1",),
+        )
+        row_before = dict(cur.fetchone())
+        fresh_conn.close()
+
+        archived_count = archive_stale_listings(
+            test_db_path, retention=DEFAULT_RETENTION
+        )
+
+        # Verify listing is gone from listings
+        fresh_conn = sqlite3.connect(test_db_path)
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM listings WHERE listing_id = ?",
+            ("archive-stale-1",),
+        )
+        still_in_listings = cur.fetchone() is not None
+        fresh_conn.close()
+
+        # Verify listing is in listings_archive with all columns intact
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT listing_id, address, price, living_area_m2, "
+            "bedrooms, property_type, first_seen_at, last_seen_at "
+            "FROM listings_archive WHERE listing_id = ?",
+            ("archive-stale-1",),
+        )
+        archive_row = cur.fetchone()
+        fresh_conn.close()
+
+        archive_dict = dict(archive_row) if archive_row else {}
+
+        # listing_exists should return False
+        exists_after = listing_exists("archive-stale-1", test_db_path)
+
+        check_pass_13 = True
+        if still_in_listings:
+            print(
+                "FAIL: listing 'archive-stale-1' still in listings table "
+                "after archival."
+            )
+            check_pass_13 = False
+        if exists_after:
+            print(
+                "FAIL: listing_exists('archive-stale-1') returned True "
+                "after archival."
+            )
+            check_pass_13 = False
+
+        if archived_count == 1:
+            print(
+                "PASS: archive_stale_listings returned count=1."
+            )
+        else:
+            print(
+                f"FAIL: archived_count={archived_count} (expected 1)."
+            )
+            check_pass_13 = False
+
+        if archive_row is not None:
+            all_cols_ok = True
+            for col in ("listing_id", "address", "price",
+                        "living_area_m2", "bedrooms", "property_type",
+                        "first_seen_at", "last_seen_at"):
+                expected = row_before.get(col)
+                actual = archive_dict.get(col)
+                if expected != actual:
+                    print(
+                        f"  FAIL: column {col}: archive={actual} "
+                        f"(expected {expected})"
+                    )
+                    all_cols_ok = False
+            if all_cols_ok:
+                print(
+                    "PASS: archived row in listings_archive has all columns "
+                    "intact and matching original values."
+                )
+            else:
+                check_pass_13 = False
+        else:
+            print(
+                "FAIL: listing not found in listings_archive after archival."
+            )
+            check_pass_13 = False
+
+        if not check_pass_13:
+            exit(1)
+
+        # ------------------------------------------------------------------
+        # Check 14: archive_stale_listings — fresh listing NOT archived
+        # ------------------------------------------------------------------
+        print(
+            "\n--- Check 14: archive_stale_listings — fresh listing preserved ---"
+        )
+
+        fresh_listing = {
+            "listing_id": "archive-fresh-1",
+            "url": "https://www.funda.nl/koop/amsterdam/archive-fresh-1/",
+            "address": "Archive Freshstraat 1",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+        insert_listing(fresh_listing, test_db_path)
+
+        # Record counts before
+        fresh_conn = sqlite3.connect(test_db_path)
+        count_listings_before = fresh_conn.execute(
+            "SELECT COUNT(*) FROM listings"
+        ).fetchone()[0]
+        count_archive_before = fresh_conn.execute(
+            "SELECT COUNT(*) FROM listings_archive"
+        ).fetchone()[0]
+        fresh_conn.close()
+
+        archive_stale_listings(test_db_path, retention=DEFAULT_RETENTION)
+
+        # Fresh listing should still be queryable
+        still_exists = listing_exists("archive-fresh-1", test_db_path)
+        if still_exists:
+            print(
+                "PASS: Fresh listing NOT archived and remains queryable "
+                "via listing_exists()."
+            )
+        else:
+            print(
+                "FAIL: Fresh listing was incorrectly archived."
+            )
+            exit(1)
+
+        # Row counts should be unchanged
+        fresh_conn = sqlite3.connect(test_db_path)
+        count_listings_after = fresh_conn.execute(
+            "SELECT COUNT(*) FROM listings"
+        ).fetchone()[0]
+        count_archive_after = fresh_conn.execute(
+            "SELECT COUNT(*) FROM listings_archive"
+        ).fetchone()[0]
+        fresh_conn.close()
+
+        if (count_listings_after == count_listings_before
+                and count_archive_after == count_archive_before):
+            print(
+                "PASS: Row counts unchanged — fresh listing not touched "
+                "(listings={}, archive={} before/after).".format(
+                    count_listings_before, count_archive_before
+                )
+            )
+        else:
+            print(
+                f"FAIL: Row counts changed. listings: "
+                f"{count_listings_before}->{count_listings_after}, "
+                f"archive: {count_archive_before}->{count_archive_after}"
+            )
+            exit(1)
+
+        # ------------------------------------------------------------------
+        # Check 15: archive_stale_listings — NULL last_seen_at fallback
+        #           (first_seen_at based staleness)
+        # ------------------------------------------------------------------
+        print(
+            "\n--- Check 15: archive_stale_listings — NULL last_seen_at fallback ---"
+        )
+
+        # Build a row directly via SQL to simulate a pre-task-1 row where
+        # last_seen_at is NULL and first_seen_at is 90 days old.
+        old_first_seen = (datetime.now() - timedelta(days=90)).isoformat()
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.execute(
+            "INSERT OR REPLACE INTO listings ("
+            "listing_id, url, address, neighborhood, price, "
+            "living_area_m2, plot_size_m2, rooms, bedrooms, "
+            "property_type, year_built, energy_label, status, "
+            "first_seen_at, notified, ownership_type, "
+            "erfpacht_canon_annual, garden_present, garden_type, "
+            "garden_size_m2, garden_orientation, balcony_present, "
+            "building_bound_outdoor_m2, garage_type, parking_type, "
+            "insulation_raw, insulation_score, heating_type, boiler_year, "
+            "bathrooms, neighborhood_avg_price_m2, score, "
+            "score_breakdown, score_confidence, detail_fetched_at, "
+            "last_seen_at"
+            ") VALUES ("
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
+            ")",
+            (
+                "archive-null-1",
+                "https://www.funda.nl/koop/amsterdam/archive-null-1/",
+                "Archive Nullstraat 1",
+                "De Pijp",
+                650000, 110, None, None, 3,
+                "appartement", None, None, None,
+                old_first_seen, 0,
+                None, None, None, None,
+                None, None, None,
+                None, None,
+                None, None,
+                None, None,
+                None, None, None,
+                None, None, None, None, None,
+            ),
+        )
+        fresh_conn.commit()
+        fresh_conn.close()
+
+        # Verify it's in listings and last_seen_at is NULL
+        fresh_conn = sqlite3.connect(test_db_path)
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT last_seen_at, first_seen_at FROM listings "
+            "WHERE listing_id = ?",
+            ("archive-null-1",),
+        )
+        null_check = cur.fetchone()
+        fresh_conn.close()
+
+        if null_check[0] is None and null_check[1] is not None:
+            print(
+                "PASS: NULL last_seen_at row constructed correctly; "
+                "first_seen_at is set."
+            )
+        else:
+            print(
+                f"FAIL: NULL row construction: last_seen_at={null_check[0]}, "
+                f"first_seen_at={null_check[1]}"
+            )
+            exit(1)
+
+        archive_stale_listings(test_db_path, retention=DEFAULT_RETENTION)
+
+        # Should be gone from listings
+        null_archived = not listing_exists("archive-null-1", test_db_path)
+        if null_archived:
+            print(
+                "PASS: NULL last_seen_at stale listing archived via "
+                "first_seen_at fallback."
+            )
+        else:
+            print(
+                "FAIL: NULL last_seen_at listing was NOT archived."
+            )
+            exit(1)
+
+        # Verify it exists in archive
+        fresh_conn = sqlite3.connect(test_db_path)
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM listings_archive WHERE listing_id = ?",
+            ("archive-null-1",),
+        )
+        in_archive = cur.fetchone() is not None
+        fresh_conn.close()
+
+        if in_archive:
+            print(
+                "PASS: NULL last_seen_at listing found in "
+                "listings_archive."
+            )
+        else:
+            print(
+                "FAIL: NULL last_seen_at listing not in "
+                "listings_archive."
+            )
+            exit(1)
+
+        # ------------------------------------------------------------------
+        # Check 16: archive_stale_listings — nothing stale returns 0
+        # ------------------------------------------------------------------
+        print(
+            "\n--- Check 16: archive_stale_listings — nothing stale returns 0 ---"
+        )
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        count_listings_before2 = fresh_conn.execute(
+            "SELECT COUNT(*) FROM listings"
+        ).fetchone()[0]
+        count_archive_before2 = fresh_conn.execute(
+            "SELECT COUNT(*) FROM listings_archive"
+        ).fetchone()[0]
+        fresh_conn.close()
+
+        zero_count = archive_stale_listings(
+            test_db_path, retention=DEFAULT_RETENTION
+        )
+        if zero_count == 0:
+            print(
+                "PASS: archive_stale_listings returned 0 when nothing stale."
+            )
+        else:
+            print(
+                f"FAIL: Expected 0 but got {zero_count}."
+            )
+            exit(1)
+
+        # Row counts should still be unchanged
+        fresh_conn = sqlite3.connect(test_db_path)
+        count_listings_after2 = fresh_conn.execute(
+            "SELECT COUNT(*) FROM listings"
+        ).fetchone()[0]
+        count_archive_after2 = fresh_conn.execute(
+            "SELECT COUNT(*) FROM listings_archive"
+        ).fetchone()[0]
+        fresh_conn.close()
+
+        if (count_listings_after2 == count_listings_before2
+                and count_archive_after2 == count_archive_before2):
+            print(
+                "PASS: Row counts unchanged when nothing stale "
+                "(listings={}, archive={} before/after).".format(
+                    count_listings_before2, count_archive_before2
+                )
+            )
+        else:
+            print(
+                f"FAIL: Row counts changed when nothing stale. "
+                f"listings: {count_listings_before2}->{count_listings_after2}, "
+                f"archive: {count_archive_before2}->{count_archive_after2}"
+            )
+            exit(1)
+
+        # ------------------------------------------------------------------
+        # Check 17: archive_stale_listings — re-run is safe no-op
+        # ------------------------------------------------------------------
+        print(
+            "\n--- Check 17: archive_stale_listings — safe no-op on re-run ---"
+        )
+
+        rearch_count = archive_stale_listings(
+            test_db_path, retention=DEFAULT_RETENTION
+        )
+        if rearch_count == 0:
+            print(
+                "PASS: Re-running archive_stale_listings immediately after "
+                "archival returns 0 (safe no-op)."
+            )
+        else:
+            print(
+                f"FAIL: Re-run returned {rearch_count} (expected 0)."
+            )
+            exit(1)
+
+        # No duplicates in archive
+        fresh_conn = sqlite3.connect(test_db_path)
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT listing_id, COUNT(*) as cnt FROM listings_archive "
+            "GROUP BY listing_id HAVING cnt > 1"
+        )
+        duplicates = cur.fetchall()
+        fresh_conn.close()
+
+        if not duplicates:
+            print(
+                "PASS: No duplicate rows in listings_archive after re-run."
+            )
+        else:
+            print(
+                f"FAIL: Duplicate rows in listings_archive: {duplicates}"
+            )
+            exit(1)
+
+        # ------------------------------------------------------------------
+        # Check 18: archive_stale_listings — return value matches archived
+        #           count (multi-stale scenario)
+        # ------------------------------------------------------------------
+        print(
+            "\n--- Check 18: archive_stale_listings — multi-stale return count ---"
+        )
+
+        # Insert two more listings and backdate both
+        multi_stale_1 = {
+            "listing_id": "archive-multi-1",
+            "url": "https://www.funda.nl/koop/amsterdam/archive-multi-1/",
+            "address": "Archive Multistraat 1",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+        insert_listing(multi_stale_1, test_db_path)
+
+        multi_stale_2 = {
+            "listing_id": "archive-multi-2",
+            "url": "https://www.funda.nl/koop/amsterdam/archive-multi-2/",
+            "address": "Archive Multistraat 2",
+            "neighborhood": "De Pijp",
+            "price": 700000,
+            "living_area_m2": 120,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+        insert_listing(multi_stale_2, test_db_path)
+
+        # Backdate both via SQL
+        fresh_conn = sqlite3.connect(test_db_path)
+        stale_ts2 = (datetime.now() - timedelta(days=90)).isoformat()
+        fresh_conn.execute(
+            "UPDATE listings SET last_seen_at = ? WHERE listing_id IN (?, ?)",
+            (stale_ts2, "archive-multi-1", "archive-multi-2"),
+        )
+        fresh_conn.commit()
+        fresh_conn.close()
+
+        multi_count = archive_stale_listings(
+            test_db_path, retention=DEFAULT_RETENTION
+        )
+        if multi_count == 2:
+            print(
+                "PASS: Multi-stale archival returned count=2."
+            )
+        else:
+            print(
+                f"FAIL: Multi-stale returned {multi_count} (expected 2)."
+            )
+            exit(1)
+
+        # Both should be archived
+        for lid in ("archive-multi-1", "archive-multi-2"):
+            if listing_exists(lid, test_db_path):
+                print(f"FAIL: {lid} still in listings after archival.")
+                exit(1)
+        print(
+            "PASS: Both multi-stale listings are gone from listings table."
+        )
         print("\n" + "="*50)
         print("ALL TESTS PASSED SUCCESSFULLY!")
         print("="*50)
