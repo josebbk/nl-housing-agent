@@ -775,7 +775,7 @@ def _compute_insulation_score(raw: str) -> Optional[float]:
     # Count component matches
     components = ["dakisolatie", "vloerisolatie", "muurisolatie", "spouwmuurisolatie"]
     component_count = sum(1 for c in components if c in raw_lower)
-    component_score = min(component_count, 3) / 3.0  # cap at 3
+    component_score = component_count / 4.0
 
     # Glass quality tier groups — synonyms within a group map to the same score.
     # "dubbel glas" and "dubbelglas" are spelling variants (same quality).

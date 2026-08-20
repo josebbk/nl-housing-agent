@@ -5,6 +5,24 @@ and how it was fixed. Read this file before debugging any Funda scraper issue
 — the fix may already be documented, or the underlying pattern may already
 be known.
 
+## Known Limitations
+
+### parking_type (and garage_type) combined "TypeA + TypeB" stored values
+
+parking_type (and separately, garage_type) can be stored as a combined
+"TypeA + TypeB" string (e.g. "Op eigen terrein + Parkeergarage"). This
+happens when the extraction layer joins two detected values.
+
+Scoring currently works around this by splitting on "+" and using only
+the first segment for classification. This means a combined value like
+"Op eigen terrein + Parkeergarage" scores as "Op eigen terrein" (0.9)
+rather than potentially using the better of the two values (1.0 for
+Parkeergarage).
+
+Proper multi-value handling — splitting into a list at extraction time
+and scoring the best of multiple values — is deferred to a future task
+that addresses the root cause in the extraction layer.
+
 ## Entries
 
 (newest entries at the top)

@@ -8,6 +8,7 @@ and the final score is renormalized when data is missing for some criteria.
 
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -116,8 +117,11 @@ def _score_construction(detail: dict, preferences: dict) -> float | None:
 
     if year_built is not None:
         # Newer buildings score higher.
-        # 2025+ = 1.0, pre-1950 = 0.0, linear in between.
-        year_score = min(max((year_built - 1950) / (2025 - 1950), 0), 1)
+        # Bounds sourced from preferences.json, fall back to 1950/2025.
+        bounds = preferences.get("construction_year_range", {})
+        floor = bounds.get("floor", 1950)
+        cap = bounds.get("cap", 2025)
+        year_score = min(max((year_built - floor) / (cap - floor), 0), 1)
 
     if insulation_score is not None:
         insulation_comp_score = insulation_score
@@ -127,7 +131,7 @@ def _score_construction(detail: dict, preferences: dict) -> float | None:
     if insulation_comp_score is None:
         return round(year_score, 4)
 
-    return round((year_score + insulation_comp_score) / 2, 4)
+    return round(year_score * 0.35 + insulation_comp_score * 0.65, 4)
 
 
 def _score_ownership(detail: dict) -> float | None:
@@ -155,8 +159,8 @@ def _score_ownership(detail: dict) -> float | None:
     if ownership_type == "erfpacht":
         canon = detail.get("erfpacht_canon_annual")
         if canon is None or canon <= 0:
-            return 0.7  # erfpacht paid off / no ongoing canon
-        return 0.3  # erfpacht with ongoing annual canon
+            return 0.8
+        return round(0.8 * (1 - min(canon, 1000) / 1000), 4)
 
     return None
 
@@ -178,12 +182,12 @@ def _score_energy_label(detail: dict, preferences: dict) -> float | None:
     # Try exact match first
     if label_normalized in scale:
         idx = scale.index(label_normalized)
-        return round(idx / (len(scale) - 1), 4)
+        return round(math.sqrt(idx / (len(scale) - 1)), 4)
 
     # Try case-insensitive match
     for i, s in enumerate(scale):
         if s.lower() == label.lower():
-            return round(i / (len(scale) - 1), 4)
+            return round(math.sqrt(i / (len(scale) - 1)), 4)
 
     # Label not in scale — return None (unrecognized value)
     logger.warning("Unknown energy label '%s', using midpoint score", label)
@@ -260,18 +264,28 @@ def _score_parking(detail: dict) -> float | None:
     """
     parking_type = detail.get("parking_type")
     if parking_type is None:
-        # parking_type field not found on the page — data unavailable
         return None
 
-    parking_scores = {
-        "private": 1.0,
-        "carport": 0.7,
-        "paid": 0.5,
-        "public": 0.3,
-    }
+    # Known limitation: parking_type can be stored as a combined
+    # "TypeA + TypeB" string. Use only the first segment for scoring
+    # until the underlying extraction is fixed to store multiple
+    # values properly. See docs/site-notes/funda.md.
+    primary = parking_type.split("+")[0].strip().lower()
 
-    if parking_type in parking_scores:
-        return parking_scores[parking_type]
+    # Ordered from best to worst. Each tuple is (score, [substrings]).
+    # Covers both the extractor's short codes and raw Dutch phrases
+    # the extractor doesn't classify.
+    tiers = [
+        (1.0, ["parkeergarage", "afgesloten terrein"]),
+        (0.9, ["private", "eigen terrein"]),
+        (0.6, ["parkeervergunningen"]),
+        (0.4, ["paid", "betaald"]),
+        (0.2, ["public", "openbaar"]),
+    ]
+    for score, keywords in tiers:
+        if any(kw in primary for kw in keywords):
+            return score
+
     return None
 
 
@@ -289,39 +303,41 @@ def _score_bathrooms(detail: dict) -> float | None:
     return round(min(bathrooms / 3, 1.0), 4)
 
 
-def _score_living_area(detail: dict, filter_config: FilterConfig) -> float | None:
+def _score_living_area(
+    detail: dict, filter_config: FilterConfig, preferences: dict
+) -> float | None:
     """Score living area based on the configured minimum filter.
 
     Returns a float in [0, 1] or None if no living-area filter is configured.
 
     Linear scale between floor (0.0) and cap (1.0), clamped to [0, 1].
       - floor = filter_config.living_area_min
-      - if filter has both min and max: cap = max
-      - if filter has only min: cap = floor + 100
-      - if NO living-area filter is configured: return None
+      - cap = preferences["living_area_thresholds"]["cap"] (from preferences.json)
+        falls back to floor + 100 if absent.
     """
     living_area = detail.get("living_area_m2")
     if living_area is None:
         return None
 
     floor = filter_config.living_area_min
-
-    # Determine cap based on filter configuration.
-    # FilterConfig only has living_area_min (no max), so cap = floor + 100.
-    # This handles the future case where a max might be added.
-    cap = floor + 100
+    cap = preferences.get("living_area_thresholds", {}).get("cap")
+    if cap is None:
+        cap = floor + 100
 
     score = (living_area - floor) / (cap - floor)
     return round(max(0.0, min(1.0, score)), 4)
 
 
-def _score_rooms(detail: dict, filter_config: FilterConfig) -> float | None:
+def _score_rooms(
+    detail: dict, filter_config: FilterConfig, preferences: dict
+) -> float | None:
     """Score number of rooms based on the configured bedrooms filter.
 
     Returns a float in [0, 1] or None if rooms data is missing.
 
     floor = filter_config.bedrooms_min (default 1 if no filter configured).
-    cap = max(8, floor + 4).
+    cap = preferences["rooms_thresholds"]["cap"] (from preferences.json),
+        falls back to max(8, floor + 4) if absent.
 
     Linear scale between floor (0.0) and cap (1.0), clamped to [0, 1].
     """
@@ -330,7 +346,9 @@ def _score_rooms(detail: dict, filter_config: FilterConfig) -> float | None:
         return None
 
     floor = filter_config.bedrooms_min
-    cap = max(8, floor + 4)
+    cap = preferences.get("rooms_thresholds", {}).get("cap")
+    if cap is None:
+        cap = max(8, floor + 4)
 
     score = (rooms - floor) / (cap - floor)
     return round(max(0.0, min(1.0, score)), 4)
@@ -376,8 +394,8 @@ def score_listing(detail: dict, preferences: dict | None = None,
         "garden": _score_garden(detail, preferences),
         "parking": _score_parking(detail),
         "bathrooms": _score_bathrooms(detail),
-        "living_area": _score_living_area(detail, filter_config),
-        "rooms": _score_rooms(detail, filter_config),
+        "living_area": _score_living_area(detail, filter_config, preferences),
+        "rooms": _score_rooms(detail, filter_config, preferences),
     }
 
     available = {k: v for k, v in subscores.items() if v is not None}

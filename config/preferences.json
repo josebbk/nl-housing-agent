@@ -21,12 +21,16 @@
   "living_area_thresholds": {
     "floor": 100,
     "cap": 200,
-    "note": "Fallback values from config/filters.json. At runtime, _score_living_area reads filter_config.living_area_min as floor; cap = floor + 100 when no max is configured."
+    "note": "Fallback values from config/filters.json. At runtime, _score_living_area reads filter_config.living_area_min as floor; cap is read from this key."
   },
   "rooms_thresholds": {
     "floor": 3,
     "cap": 8,
-    "note": "Fallback values from config/filters.json.bedrooms_min. At runtime, _score_rooms uses filter_config.bedrooms_min as floor; cap = max(8, floor + 4)."
+    "note": "Fallback values from config/filters.json.bedrooms_min. At runtime, _score_rooms uses filter_config.bedrooms_min as floor; cap is read from this key."
+  },
+  "construction_year_range": {
+    "floor": 1950,
+    "cap": 2025
   },
   "notification_score_threshold": 80
 }
