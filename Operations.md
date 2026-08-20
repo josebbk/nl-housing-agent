@@ -213,6 +213,30 @@ Never print the Telegram bot token in logs or terminal output.
 
 If a secret is accidentally committed, stop and treat it as a security incident rather than simply deleting it from the latest commit.
 
+### Retention policy configuration (`config/retention.json`)
+
+This file governs the not-yet-implemented stale-listing archival feature
+(Task 3 of 4).  It is intentionally a **separate** file from
+`config/filters.json` (search criteria) and `config/preferences.json`
+(scoring weights) because data retention is an unrelated operational
+concern — it controls how long listings are kept before archival, not how
+they are found or ranked.
+
+```text
+config/retention.json
+```
+
+| Key          | Type   | Default | Meaning                                           |
+| ------------ | ------ | ------- | ------------------------------------------------- |
+| `stale_days` | int    | 60      | Days since last seen before a listing is archived |
+
+A value of `60` means a listing whose `last_seen_at` is older than 60 days
+is eligible for archival.  The value must be a positive integer; `0` and
+negative values are rejected.  Missing `stale_days` falls back to 60.
+Unknown keys raise `ValueError`.
+
+See `src/config.py` for the authoritative key list and validation rules.
+
 ### First-run notification gating after a filter change (Task 2 — generalized)
 
 > **Superseded (Task 4):** The gating condition was generalized from

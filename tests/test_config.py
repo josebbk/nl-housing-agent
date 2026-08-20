@@ -18,7 +18,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import config
-from src.config import DEFAULT_FILTERS, FilterConfig
+from src.config import (
+    DEFAULT_FILTERS,
+    DEFAULT_RETENTION,
+    FilterConfig,
+    RetentionConfig,
+)
 
 
 class FilterConfigDefaultsTestCase(unittest.TestCase):
@@ -401,6 +406,101 @@ class FilterConfigConstructionTestCase(unittest.TestCase):
                          construction_type="new").construction_type,
             "new",
         )
+
+
+class RetentionConfigDefaultsTestCase(unittest.TestCase):
+    """Phase 1 defaults and the default retention file."""
+
+    def test_default_retention_value(self):
+        self.assertEqual(DEFAULT_RETENTION.stale_days, 60)
+
+    def test_default_path_is_project_root_relative(self):
+        expected = Path(__file__).resolve().parent.parent / "config" / "retention.json"
+        self.assertEqual(config._RETENTION_PATH, expected)
+        self.assertTrue(config._RETENTION_PATH.is_absolute())
+        self.assertTrue(config._RETENTION_PATH.exists())
+
+    def test_default_retention_file_loads_60(self):
+        self.assertEqual(RetentionConfig.from_file(), DEFAULT_RETENTION)
+
+
+class RetentionConfigFileTestCase(unittest.TestCase):
+    """File-driven tests for RetentionConfig.from_file()."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.retention_path = Path(self._tmp.name) / "retention.json"
+
+    def _write(self, obj):
+        self.retention_path.write_text(json.dumps(obj), encoding="utf-8")
+
+    def test_from_file_custom_stale_days(self):
+        self._write({"stale_days": 90})
+        retention = RetentionConfig.from_file(self.retention_path)
+        self.assertEqual(retention.stale_days, 90)
+
+    def test_missing_file_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            RetentionConfig.from_file(self.retention_path)
+
+    def test_invalid_json_raises_value_error(self):
+        self.retention_path.write_text("{ not valid json", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            RetentionConfig.from_file(self.retention_path)
+
+    def test_non_object_json_raises_value_error(self):
+        self._write([1, 2, 3])
+        with self.assertRaises(ValueError):
+            RetentionConfig.from_file(self.retention_path)
+
+    def test_unknown_key_raises_value_error(self):
+        self._write({"foo": 1})
+        with self.assertRaises(ValueError):
+            RetentionConfig.from_file(self.retention_path)
+
+    def test_missing_stale_days_falls_back_to_60(self):
+        self._write({})
+        retention = RetentionConfig.from_file(self.retention_path)
+        self.assertEqual(retention.stale_days, 60)
+
+    def test_string_stale_days_raises_value_error(self):
+        self._write({"stale_days": "60"})
+        with self.assertRaises(ValueError):
+            RetentionConfig.from_file(self.retention_path)
+
+    def test_zero_stale_days_raises_value_error(self):
+        self._write({"stale_days": 0})
+        with self.assertRaises(ValueError):
+            RetentionConfig.from_file(self.retention_path)
+
+    def test_negative_stale_days_raises_value_error(self):
+        self._write({"stale_days": -5})
+        with self.assertRaises(ValueError):
+            RetentionConfig.from_file(self.retention_path)
+
+    def test_bool_stale_days_raises_value_error(self):
+        self._write({"stale_days": True})
+        with self.assertRaises(ValueError):
+            RetentionConfig.from_file(self.retention_path)
+
+
+class RetentionConfigConstructionTestCase(unittest.TestCase):
+    """Immutability and direct-construction validation."""
+
+    def test_retentionconfig_is_frozen(self):
+        with self.assertRaises(FrozenInstanceError):
+            DEFAULT_RETENTION.stale_days = 1
+
+    def test_direct_construction_validates_positive(self):
+        with self.assertRaises(ValueError):
+            RetentionConfig(stale_days=0)
+        with self.assertRaises(ValueError):
+            RetentionConfig(stale_days=-1)
+
+    def test_direct_construction_accepts_valid(self):
+        rc = RetentionConfig(stale_days=30)
+        self.assertEqual(rc.stale_days, 30)
 
 
 if __name__ == "__main__":

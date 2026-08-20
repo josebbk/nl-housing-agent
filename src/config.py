@@ -244,3 +244,77 @@ DEFAULT_FILTERS = FilterConfig(
     bedrooms_min=_PHASE1_BEDROOMS_MIN,
     living_area_min=_PHASE1_LIVING_AREA_MIN,
 )
+
+# ---------------------------------------------------------------------------
+# Retention config (stale-listing archival policy — Task 2 of 4)
+#
+# This module owns the only retention defaults.  storage.py and main.py must
+# import DEFAULT_RETENTION / RetentionConfig from here rather than
+# redefining them.
+# ---------------------------------------------------------------------------
+
+_RETENTION_PATH = _PROJECT_ROOT / "config" / "retention.json"
+
+_RETENTION_KEYS = ("stale_days",)
+
+_DEFAULT_STALE_DAYS = 60
+
+
+@dataclass(frozen=True)
+class RetentionConfig:
+    """Immutable data-retention policy.
+
+    ``from_file()`` loads the human-editable file
+    ``config/retention.json``; missing ``stale_days`` falls back to 60.
+    """
+
+    stale_days: int
+
+    def __post_init__(self) -> None:
+        if type(self.stale_days) is not int:
+            raise ValueError(
+                f"stale_days must be an integer, got {self.stale_days!r}."
+            )
+        if self.stale_days <= 0:
+            raise ValueError(
+                f"stale_days must be positive, got {self.stale_days!r}."
+            )
+
+    @classmethod
+    def from_file(cls, path: Path | str | None = None) -> "RetentionConfig":
+        """Build a ``RetentionConfig`` from the human-editable retention file.
+
+        Defaults to ``config/retention.json`` relative to the project root.
+        Missing ``stale_days`` falls back to 60; unknown keys raise
+        ``ValueError``.
+        """
+        path = Path(path) if path is not None else _RETENTION_PATH
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ValueError(
+                f"Could not read retention file {path}: {exc}"
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Retention file {path} is not valid JSON: {exc}"
+            ) from exc
+
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"Retention file {path} must contain a JSON object, "
+                f"got {type(raw).__name__}."
+            )
+
+        unknown = sorted(key for key in raw if key not in _RETENTION_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Retention file {path} contains unknown key(s): "
+                f"{', '.join(unknown)}. Expected keys: "
+                f"{', '.join(_RETENTION_KEYS)}."
+            )
+
+        return cls(stale_days=raw.get("stale_days", _DEFAULT_STALE_DAYS))
+
+
+DEFAULT_RETENTION = RetentionConfig(stale_days=60)
