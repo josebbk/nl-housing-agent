@@ -758,7 +758,19 @@ data/funda.db
 | `energy_label`   | TEXT              | Nullable                                             |
 | `status`         | TEXT              | Available / under offer / sold / etc.; NULL at card level |
 | `first_seen_at`  | TEXT              | ISO 8601 timestamp                                |
+| `last_seen_at`   | TEXT              | Nullable. ISO 8601 timestamp stamped to "now" on
+                      every `insert_listing()` call (both INSERT
+                      and UPDATE paths). Used for future staleness
+                      detection.                          |
 | `notified`       | INTEGER           | Boolean: 0/1                                      |
+
+### `listings_archive`
+
+| Column           | Type              | Notes                                             |
+| ---------------- | ----------------- | ------------------------------------------------- |
+| (same as `listings`) |               | Same-schema mirror table for archived stale        |
+|                  |                   | listings. Currently unused — population by archival |
+|                  |                   | logic is a future task.                            |
 
 ### Required fields enforcement (supersedes earlier "bedrooms nullable" decision)
 

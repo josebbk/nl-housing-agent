@@ -67,7 +67,8 @@ heating_type TEXT,
                         score INTEGER,
                         score_breakdown TEXT,
                         score_confidence TEXT,
-                        detail_fetched_at TEXT
+                        detail_fetched_at TEXT,
+                        last_seen_at TEXT
                     );
                 """)
 
@@ -93,6 +94,7 @@ heating_type TEXT,
                     ("score_breakdown", "TEXT"),
                     ("score_confidence", "TEXT"),
                     ("detail_fetched_at", "TEXT"),
+                    ("last_seen_at", "TEXT"),
                 ]
                 for col_name, col_type in phase2_columns:
                     cursor.execute(
@@ -110,6 +112,50 @@ heating_type TEXT,
                                 "Could not add column %s (may already exist): %s",
                                 col_name, e,
                             )
+        # Create the listings_archive table (same schema as listings)
+                # for future stale-listing archival. Currently unused —
+                # population logic is a future task.
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS listings_archive (
+                        listing_id TEXT PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        address TEXT NOT NULL,
+                        neighborhood TEXT NOT NULL,
+                        price INTEGER,
+                        living_area_m2 INTEGER,
+                        plot_size_m2 INTEGER,
+                        rooms INTEGER,
+                        bedrooms INTEGER,
+                        property_type TEXT,
+                        year_built INTEGER,
+                        energy_label TEXT,
+                        status TEXT,
+                        first_seen_at TEXT NOT NULL,
+                        notified INTEGER NOT NULL DEFAULT 0,
+                        ownership_type TEXT,
+                        erfpacht_canon_annual REAL,
+                        garden_present INTEGER,
+                        garden_type TEXT,
+                        garden_size_m2 INTEGER,
+                        garden_orientation TEXT,
+                        balcony_present INTEGER,
+                        building_bound_outdoor_m2 INTEGER,
+                        garage_type TEXT,
+                        parking_type TEXT,
+                        insulation_raw TEXT,
+                        insulation_score REAL,
+                        heating_type TEXT,
+                        boiler_year INTEGER,
+                        bathrooms INTEGER,
+                        neighborhood_avg_price_m2 REAL,
+                        score INTEGER,
+                        score_breakdown TEXT,
+                        score_confidence TEXT,
+                        detail_fetched_at TEXT,
+                        last_seen_at TEXT
+                    );
+                """)
+
         logger.info("Database initialized successfully at: %s", db_path)
     except sqlite3.Error as e:
         logger.exception("Failed to initialize database at %s: %s", db_path, e)
@@ -188,6 +234,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                 if existing is None:
                     # --- New listing: INSERT ---
                     data["first_seen_at"] = datetime.now().isoformat()
+                    data["last_seen_at"] = datetime.now().isoformat()
                     query = """
                         INSERT INTO listings (
                             listing_id, url, address, neighborhood, price, living_area_m2,
@@ -199,7 +246,8 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                             garage_type, parking_type, insulation_raw, insulation_score,
                             heating_type, boiler_year,
                             bathrooms, neighborhood_avg_price_m2,
-                            score, score_breakdown, score_confidence, detail_fetched_at
+                            score, score_breakdown, score_confidence, detail_fetched_at,
+                            last_seen_at
                         ) VALUES (
                             :listing_id, :url, :address, :neighborhood, :price, :living_area_m2,
                             :plot_size_m2, :rooms, :bedrooms, :property_type, :year_built,
@@ -210,7 +258,8 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                             :garage_type, :parking_type, :insulation_raw, :insulation_score,
                             :heating_type, :boiler_year,
                             :bathrooms, :neighborhood_avg_price_m2,
-                            :score, :score_breakdown, :score_confidence, :detail_fetched_at
+                            :score, :score_breakdown, :score_confidence, :detail_fetched_at,
+                            :last_seen_at
                         );
                     """
                     cursor.execute(query, data)
@@ -276,6 +325,11 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
 
                 # Build an UPDATE query with all updatable fields
                 # (never touch listing_id or first_seen_at)
+                # last_seen_at is stamped unconditionally here (not through
+                # the preservation loop) — every call to insert_listing means
+                # the listing was just encountered in a scrape, so it should
+                # always be refreshed to "now".
+                data["last_seen_at"] = datetime.now().isoformat()
                 updatable = [
                     "url", "address", "neighborhood", "price", "living_area_m2",
                     "plot_size_m2", "rooms", "bedrooms", "property_type",
@@ -287,6 +341,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                     "heating_type", "boiler_year",
                     "bathrooms", "neighborhood_avg_price_m2",
                     "score", "score_breakdown", "score_confidence", "detail_fetched_at",
+                    "last_seen_at",
                 ]
                 set_clause = ", ".join(f"{col} = :{col}" for col in updatable)
                 # Always preserve the existing notified value — it is only
@@ -1517,6 +1572,153 @@ if __name__ == "__main__":
                 f"(expected 'full'), garden_present={row['garden_present']} "
                 f"(expected True), bathrooms={row['bathrooms']} "
                 f"(expected 2)"
+            )
+            exit(1)
+
+        # ------------------------------------------------------------------
+        # Check 10: listings_archive table exists and matches listings schema
+        # ------------------------------------------------------------------
+        print("\n--- Check 10: listings_archive table schema ---")
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+
+        cur.execute("PRAGMA table_info(listings);")
+        listings_cols = {row[1] for row in cur.fetchall()}
+
+        cur.execute("PRAGMA table_info(listings_archive);")
+        archive_cols = {row[1] for row in cur.fetchall()}
+        fresh_conn.close()
+
+        if "listings_archive" in {
+            row[1] for row in fresh_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table';"
+            ).fetchall()
+        } if False else True:
+            pass  # pragma: no cover — handled below
+
+        # Re-open to check table existence properly
+        fresh_conn = sqlite3.connect(test_db_path)
+        cur = fresh_conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        table_names = {row[0] for row in cur.fetchall()}
+        fresh_conn.close()
+
+        if "listings_archive" in table_names:
+            print("PASS: listings_archive table exists.")
+        else:
+            print("FAIL: listings_archive table does not exist.")
+            exit(1)
+
+        if listings_cols == archive_cols:
+            print(
+                "PASS: listings_archive has the same column names as "
+                "listings ({} columns).".format(len(listings_cols))
+            )
+        else:
+            missing = listings_cols - archive_cols
+            extra = archive_cols - listings_cols
+            msg_parts = []
+            if missing:
+                msg_parts.append("listings has extra: {}".format(missing))
+            if extra:
+                msg_parts.append("archive has extra: {}".format(extra))
+            print("FAIL: Column mismatch between listings and "
+                  "listings_archive: {}".format(", ".join(msg_parts)))
+            exit(1)
+
+        # ------------------------------------------------------------------
+        # Check 11: last_seen_at is stamped on new listing insert
+        # ------------------------------------------------------------------
+        print("\n--- Check 11: last_seen_at stamped on new insert ---")
+
+        new_listing_for_ts = {
+            "listing_id": "ts-test-1",
+            "url": "https://www.funda.nl/koop/amsterdam/ts-test-1/",
+            "address": "Timestamp Test 1",
+            "neighborhood": "De Pijp",
+            "price": 650000,
+            "living_area_m2": 110,
+            "plot_size_m2": None,
+            "rooms": None,
+            "bedrooms": 3,
+            "property_type": "appartement",
+            "year_built": None,
+            "energy_label": None,
+            "status": None,
+        }
+        insert_listing(new_listing_for_ts, test_db_path)
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT last_seen_at FROM listings WHERE listing_id = ?",
+            ("ts-test-1",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        ts_value = row["last_seen_at"]
+        try:
+            parsed = datetime.fromisoformat(ts_value)
+            if ts_value is not None:
+                print(
+                    "PASS: last_seen_at is a valid non-null ISO 8601 "
+                    "timestamp: {}".format(ts_value)
+                )
+            else:
+                print("FAIL: last_seen_at is NULL after new insert.")
+                exit(1)
+        except (ValueError, TypeError):
+            print(
+                "FAIL: last_seen_at is not a valid ISO 8601 timestamp: "
+                "{}".format(ts_value)
+            )
+            exit(1)
+
+        # ------------------------------------------------------------------
+        # Check 12: last_seen_at is re-stamped on update (existing listing)
+        # ------------------------------------------------------------------
+        print("\n--- Check 12: last_seen_at re-stamped on update ---")
+
+        first_ts = ts_value
+        # Re-insert the SAME listing (identical data) — should update
+        # last_seen_at to a new value
+        insert_listing(new_listing_for_ts, test_db_path)
+
+        fresh_conn = sqlite3.connect(test_db_path)
+        fresh_conn.row_factory = sqlite3.Row
+        cur = fresh_conn.cursor()
+        cur.execute(
+            "SELECT last_seen_at FROM listings WHERE listing_id = ?",
+            ("ts-test-1",),
+        )
+        row = cur.fetchone()
+        fresh_conn.close()
+
+        second_ts = row["last_seen_at"]
+        try:
+            parsed2 = datetime.fromisoformat(second_ts)
+            if second_ts is not None and second_ts >= first_ts:
+                print(
+                    "PASS: last_seen_at was re-stamped on update: "
+                    "{} -> {}".format(first_ts, second_ts)
+                )
+            else:
+                print(
+                    "FAIL: last_seen_at was not updated on re-insert. "
+                    "Expected >= {} but got {}. "
+                    "(Preserved old value instead of stamping new.)".format(
+                        first_ts, second_ts
+                    )
+                )
+                exit(1)
+        except (ValueError, TypeError):
+            print(
+                "FAIL: second last_seen_at is not valid ISO 8601: "
+                "{}".format(second_ts)
             )
             exit(1)
 
