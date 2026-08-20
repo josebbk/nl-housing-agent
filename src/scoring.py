@@ -354,6 +354,110 @@ def _score_rooms(
     return round(max(0.0, min(1.0, score)), 4)
 
 
+def _score_garage(detail: dict) -> float | None:
+    """Score garage type.
+
+    Returns a float in [0, 1], or None if garage_type is an
+    unrecognized (present but unmapped) value.
+
+    Absence of a garage is a CONFIRMED negative (not missing data):
+    Funda's page structure omits the entire "Garage" section when a
+    listing genuinely has no garage, so garage_type is reliably None
+    both when there truly is no garage AND when the field could not
+    be parsed. This function treats garage_type is None as an
+    explicit 0.0 (no garage), matching the same pattern already used
+    for garden_present is False in _score_garden.
+
+    Known limitation: garage_type can be stored as a combined
+    "TypeA + TypeB" string. This function uses only the first type
+    before "+" for scoring until the underlying extraction is fixed
+    to store multiple values properly. See docs/site-notes/funda.md.
+    """
+    garage_type = detail.get("garage_type")
+    if garage_type is None:
+        return 0.0  # confirmed no garage — see docstring
+
+    primary = garage_type.split("+")[0].strip().lower()
+
+    # Ordered best to worst, based on convenience/permanence.
+    tiers = [
+        (1.0, ["inpandige garage"]),
+        (0.95, ["aangebouwde garage"]),
+        (0.9, ["parkeerkelder"]),
+        (0.85, ["garage + carport"]),  # rare pre-split literal match
+        (0.75, ["vrijstaande garage"]),
+        (0.6, ["garagebox"]),
+        (0.5, ["souterrain"]),
+        (0.4, ["carport"]),
+        (0.3, ["parkeerplaats"]),
+        (0.1, ["garage mogelijk"]),
+    ]
+    for score, keywords in tiers:
+        if any(kw in primary for kw in keywords):
+            return score
+
+    return None  # unrecognized value (e.g. "Elk soort garage") — missing
+
+
+def _score_plot_size(detail: dict, preferences: dict) -> float | None:
+    """Score plot size (m²). "More is better", linear, capped.
+
+    Returns a float in [0, 1], or None if plot_size_m2 is unavailable.
+    plot_size_m2 being None is treated as MISSING data, not a
+    negative — we cannot reliably distinguish "apartment with
+    genuinely no private plot" from "a plot exists but this field
+    failed to parse" using this field alone, so it is excluded from
+    renormalization rather than penalized.
+
+    floor = 0 (a plot size of 0 would represent the worst case)
+    cap = preferences["plot_size_thresholds"]["cap"], default 200
+    if the key is absent from config/preferences.json.
+    """
+    plot_size = detail.get("plot_size_m2")
+    if plot_size is None:
+        return None
+
+    cap = preferences.get("plot_size_thresholds", {}).get("cap", 200)
+    score = plot_size / cap
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def _score_balcony(detail: dict) -> float:
+    """Score balcony presence. Binary.
+
+    Returns 1.0 if a balcony is present, 0.0 otherwise.
+
+    Unlike most other criteria, this NEVER returns None. Per the
+    confirmed field-location ground truth, the "Balkon/dakterras"
+    field only appears on the page at all when a balcony genuinely
+    exists — absence is a reliable, confirmed negative (no balcony),
+    not missing/uncertain data. This mirrors the garden_present /
+    garage_type pattern.
+    """
+    return 1.0 if detail.get("balcony_present") else 0.0
+
+
+def _score_heating(detail: dict) -> float | None:
+    """Score heating type by efficiency/future-proofing.
+
+    Returns a float in [0, 1], or None if heating_type is missing or
+    unrecognized. Unlike garage/balcony, every home has SOME form of
+    heating — if this field is None, that is much more likely a
+    parsing miss than a genuine absence of heating, so it is treated
+    as MISSING (excluded from renormalization), not as a negative.
+    """
+    heating_type = detail.get("heating_type")
+    if heating_type is None:
+        return None
+
+    scores = {
+        "heat_pump": 1.0,
+        "district": 0.6,
+        "gas_boiler": 0.3,
+    }
+    return scores.get(heating_type)  # None if not a recognized key
+
+
 def score_listing(detail: dict, preferences: dict | None = None,
                   filter_config: FilterConfig | None = None) -> ScoreResult:
     """Score a listing against preferences.

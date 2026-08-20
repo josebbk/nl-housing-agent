@@ -32,5 +32,6 @@
     "floor": 1950,
     "cap": 2025
   },
+  "plot_size_thresholds": { "cap": 200 },
   "notification_score_threshold": 80
 }
