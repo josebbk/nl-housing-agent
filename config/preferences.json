@@ -12,9 +12,9 @@
   },
   "energy_label_scale": ["G","F","E","D","C","B","A","A+","A++","A+++","A++++"],
   "insulation_keywords": {
-    "components": ["dakisolatie", "vloerisolatie", "muurisolatie", "spouwmuurisolatie"],
-    "glass_tiers": ["enkel glas", "dubbel glas", "dubbelglas", "hr-glas", "hr glas", "hr+", "hr++"]
+    "components": ["dakisolatie", "vloerisolatie", "muurisolatie", "spouwmuurisolatie"]
   },
+  "note": "insulation_keywords.glass_tiers is deprecated — the hardcoded glass tier groups in detail_scraper.py use an ordered list of synonym groups instead of this flat array.",
   "neighborhood_value_thresholds": { "good_ratio": 0.8, "bad_ratio": 1.2 },
   "garden_size_cap_m2": 50,
   "garden_orientation_bonus": ["zuiden", "westen"],

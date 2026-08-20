@@ -777,14 +777,31 @@ def _compute_insulation_score(raw: str) -> Optional[float]:
     component_count = sum(1 for c in components if c in raw_lower)
     component_score = min(component_count, 3) / 3.0  # cap at 3
 
-    # Glass quality tier
-    glass_tiers = ["enkel glas", "dubbel glas", "dubbelglas", "hr-glas", "hr glas", "hr+", "hr++"]
+    # Glass quality tier groups — synonyms within a group map to the same score.
+    # "dubbel glas" and "dubbelglas" are spelling variants (same quality).
+    # "hr-glas" and "hr glas" are also spelling variants.
+    # "hr+" and "hr++" are distinct quality tiers, not variants.
+    glass_tier_groups = [
+        ["enkel glas"],
+        ["dubbel glas", "dubbelglas"],
+        ["hr-glas", "hr glas"],
+        ["hr+"],
+        ["hr++"],
+    ]
     glass_score = 0.0
-    for tier in glass_tiers:
-        if tier in raw_lower:
-            tier_idx = glass_tiers.index(tier)
-            glass_score = tier_idx / (len(glass_tiers) - 1)  # normalize to [0, 1]
-            break
+    for group_idx, group in enumerate(glass_tier_groups):
+        for tier in group:
+            if tier in raw_lower:
+                # "hr++" contains "hr+" as a substring, so check that if we
+                # matched "hr+" but the string actually contains "hr++", skip
+                # to the higher group instead.
+                if tier == "hr+" and "hr++" in raw_lower:
+                    continue
+                glass_score = group_idx / (len(glass_tier_groups) - 1)
+                break
+        else:
+            continue
+        break
 
     # Composite: 60% components, 40% glass
     return round(component_score * 0.6 + glass_score * 0.4, 4)

@@ -42,10 +42,10 @@ def _load_preferences(path: Path | str | None = None) -> dict:
     weights = prefs.get("weights", {})
     total = sum(weights.values())
     if total != 100:
-        logger.warning(
-            "Preference weights sum to %d (expected 100). This is not enforced "
-            "but may produce unexpected scores.",
-            total,
+        raise ValueError(
+            f"config/preferences.json weights sum to {total}, but must sum to "
+            f"exactly 100. Check config/preferences.json's \"weights\" object "
+            f"for a typo, duplicate, or missing entry, then re-run."
         )
 
     return prefs
@@ -158,7 +158,7 @@ def _score_ownership(detail: dict) -> float | None:
             return 0.7  # erfpacht paid off / no ongoing canon
         return 0.3  # erfpacht with ongoing annual canon
 
-    return 0.0
+    return None
 
 
 def _score_energy_label(detail: dict, preferences: dict) -> float | None:
@@ -185,9 +185,9 @@ def _score_energy_label(detail: dict, preferences: dict) -> float | None:
         if s.lower() == label.lower():
             return round(i / (len(scale) - 1), 4)
 
-    # Label not in scale — return middle value
+    # Label not in scale — return None (unrecognized value)
     logger.warning("Unknown energy label '%s', using midpoint score", label)
-    return 0.5
+    return None
 
 
 def _score_garden(detail: dict, preferences: dict) -> float | None:
@@ -252,7 +252,7 @@ def _score_parking(detail: dict) -> float | None:
       "carport"               = 0.7
       "paid" (betaald)        = 0.5
       "public" (openbaar)     = 0.3
-      unknown type            = 0.0
+      unknown type            = None (data unavailable / unrecognized)
 
     IMPORTANT: None means "data unavailable" (field not present on the page),
     NOT "no parking". A listing with no parking field is excluded from the
@@ -270,7 +270,9 @@ def _score_parking(detail: dict) -> float | None:
         "public": 0.3,
     }
 
-    return parking_scores.get(parking_type, 0.0)
+    if parking_type in parking_scores:
+        return parking_scores[parking_type]
+    return None
 
 
 def _score_bathrooms(detail: dict) -> float | None:
@@ -393,15 +395,20 @@ def score_listing(detail: dict, preferences: dict | None = None,
     score = round(sum(weights[k] * available[k] for k in available) / total_weight * 100)
     confidence = "full" if not missing else "partial"
 
-    breakdown = [
-        {
+    breakdown = []
+    for k in weights:
+        if k in available:
+            points_possible = round(weights[k] / total_weight * 100)
+            points_earned = round(points_possible * available[k])
+        else:
+            points_possible = 0
+            points_earned = 0
+        breakdown.append({
             "criterion": k,
-            "points_earned": round(weights[k] * available[k]) if k in available else 0,
-            "points_possible": weights[k],
+            "points_earned": points_earned,
+            "points_possible": points_possible,
             "matched": k in available,
-        }
-        for k in weights
-    ]
+        })
 
     return ScoreResult(
         score=score,
