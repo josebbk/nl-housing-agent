@@ -1,14 +1,17 @@
 {
   "weights": {
-    "neighborhood_value": 21,
-    "ownership": 17,
-    "energy_label": 14,
-    "living_area": 12,
-    "construction_condition": 11,
-    "parking": 8,
-    "rooms": 7,
-    "bathrooms": 6,
-    "garden": 4
+    "neighborhood_value": 20,
+    "ownership": 15,
+    "energy_label": 13,
+    "living_area": 11,
+    "construction_condition": 10,
+    "garage": 6,
+    "parking": 7,
+    "rooms": 6,
+    "plot_size": 5,
+    "garden": 4,
+    "heating": 2,
+    "balcony": 1
   },
   "energy_label_scale": ["G","F","E","D","C","B","A","A+","A++","A+++","A++++"],
   "insulation_keywords": {

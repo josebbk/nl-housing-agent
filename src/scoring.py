@@ -27,7 +27,7 @@ class ScoreResult:
     """Result of scoring a listing against preferences."""
     score: int  # 0-100, or None if no data available
     breakdown: list[dict]  # list of {criterion, points_earned, points_possible, matched}
-    confidence: str  # "full" | "partial" | "no_data"
+    confidence: str  # "full" | "partial" | "partial_major_missing" | "no_data"
     missing_criteria: list[str]  # list of criterion names with no data
 
     def to_dict(self) -> dict:
@@ -289,20 +289,6 @@ def _score_parking(detail: dict) -> float | None:
     return None
 
 
-def _score_bathrooms(detail: dict) -> float | None:
-    """Score number of bathrooms.
-
-    Returns a float in [0, 1] or None if bathrooms is missing.
-
-    Normalized against a maximum of 3 bathrooms.
-    """
-    bathrooms = detail.get("bathrooms")
-    if bathrooms is None:
-        return None
-
-    return round(min(bathrooms / 3, 1.0), 4)
-
-
 def _score_living_area(
     detail: dict, filter_config: FilterConfig, preferences: dict
 ) -> float | None:
@@ -479,7 +465,7 @@ def score_listing(detail: dict, preferences: dict | None = None,
     ScoreResult
         score: int 0-100, or None if no data available
         breakdown: list of criterion detail dicts
-        confidence: "full" | "partial" | "no_data"
+        confidence: "full" | "partial" | "partial_major_missing" | "no_data"
         missing_criteria: list of criterion names with no data
     """
     if preferences is None:
@@ -497,9 +483,12 @@ def score_listing(detail: dict, preferences: dict | None = None,
         "energy_label": _score_energy_label(detail, preferences),
         "garden": _score_garden(detail, preferences),
         "parking": _score_parking(detail),
-        "bathrooms": _score_bathrooms(detail),
         "living_area": _score_living_area(detail, filter_config, preferences),
         "rooms": _score_rooms(detail, filter_config, preferences),
+        "garage": _score_garage(detail),
+        "plot_size": _score_plot_size(detail, preferences),
+        "balcony": _score_balcony(detail),
+        "heating": _score_heating(detail),
     }
 
     available = {k: v for k, v in subscores.items() if v is not None}
@@ -515,7 +504,11 @@ def score_listing(detail: dict, preferences: dict | None = None,
 
     total_weight = sum(weights[k] for k in available)
     score = round(sum(weights[k] * available[k] for k in available) / total_weight * 100)
-    confidence = "full" if not missing else "partial"
+    top_criterion = max(weights, key=weights.get)
+    if top_criterion in missing:
+        confidence = "partial_major_missing"
+    else:
+        confidence = "full" if not missing else "partial"
 
     breakdown = []
     for k in weights:
