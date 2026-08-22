@@ -895,6 +895,29 @@ fetch_unnotified_matching_listings(
 * All Phase 1 orchestration (init_db, insert, notify, mark-as-notified,
   dry-run, exit codes, logging) is unchanged.
 
+#### Orchestration stages
+
+`main()` is decomposed into small, ordered stage helpers so the run
+pipeline reads as a sequence of named steps. This is a structural
+refactor only — every external behavior (flags, exit codes, log wording,
+DB writes, gating) is unchanged:
+
+| Stage | Helper | Concern |
+| ----- | ------ | ------- |
+| 1 | `_load_configuration()` | Loads `FilterConfig` + `RetentionConfig`; invalid config aborts before any scraping |
+| 2 | `_determine_scan_mode()` | Snapshot comparison + staleness fallback → `ScanMode` |
+| — | `_resolve_scan_parameters()` | Pure mapping: full scan → no publication filter + 5 pages; delta scan → 3-day publication filter + 15 pages |
+| 3 | `_setup_logging()` | File + console handlers |
+| 4–5 | init_db / `scrape_funda(...)` | Database init, scrape with scan-mode parameters |
+| 6 | `_insert_listings_into_storage()` | Shared persistence stage (standard run + seed); returns classified `InsertResult` |
+| 7 | `fetch_unnotified_matching_listings(...)` | Matching via storage (full filter config applied there) |
+| 8 | `_score_and_persist_listing()` | Shared detail-fetch/score/persist core (standard run, seed, backfill) |
+| 9 | `_apply_full_scan_gate()` + notify | Task 2 gating at `GATING_THRESHOLD = 70`, then notification |
+| 10 | `_finalise_run()` | Filter snapshot save, stale-listing archival, run summary, last-successful-run |
+
+Pipeline order (`configuration → scrape → persist → match`) and the
+scan-parameter mapping are pinned by `tests/test_orchestration.py`.
+
 ---
 
 ## Phase 1 Filtering Criteria
