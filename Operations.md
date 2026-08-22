@@ -158,7 +158,39 @@ human-editable JSON file:
 config/filters.json
 ```
 
-Its keys control the housing search criteria:
+The file is organised into two clearly labelled sections so it stays easy to
+read without touching source code:
+
+```json
+{
+    "required": {
+        "price_min": 550000,
+        "price_max": 750000,
+        "bedrooms_min": 3,
+        "living_area_min": 100
+    },
+    "optional": {
+        "bedrooms_max": null,
+        "living_area_max": null,
+        "rooms_min": null,
+        "rooms_max": null,
+        "plot_size_min": null,
+        "plot_size_max": null,
+        "property_type": null,
+        "energy_label_min": null,
+        "energy_label_max": null,
+        "transaction_type": null,
+        "radius_km": null,
+        "construction_type": null
+    }
+}
+```
+
+* `required` — the four Phase 1 base criteria, kept at their current values.
+* `optional` — every optional preference key; `null` means "no restriction",
+  so an unused preference can simply be left as `null`.
+
+Each key controls the housing search criteria:
 
 | Key                  | Type       | Default | Meaning                                     |
 | -------------------- | ---------- | ------- | ------------------------------------------- |
@@ -185,9 +217,15 @@ Ranged filters accept `_min`/`_max` pairs; a `null` bound leaves that side
 open-ended. `rooms_min`/`rooms_max`, `radius_km`, and `construction_type` are
 applied to the Funda search URL only (not the local matching query).
 Invalid values or unknown keys cause the run to fail loudly rather than being
-silently coerced. The file is resolved from the project root regardless of the
-working directory, so cron/systemd/tmux execution finds it automatically. See
-`src/config.py` for the authoritative key list and validation rules.
+silently coerced. Each key must appear in its own section (`required` for the
+four base criteria, `optional` for everything else): a key placed in the
+wrong section, an unknown key inside a section, or a mix of sectioned and
+flat top-level keys is also rejected with a clear error. The older flat
+layout (all filter keys at the top level, no sections) is still accepted for
+backward compatibility. The file is resolved from the project root regardless
+of the working directory, so cron/systemd/tmux execution finds it
+automatically. See `src/config.py` for the authoritative key list and
+validation rules.
 
 The real `.env` file must never be committed to Git.
 

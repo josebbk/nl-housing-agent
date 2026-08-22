@@ -716,26 +716,33 @@ src/scraper.py / src/storage.py
 
 ### `config/filters.json` — user-editable filter file
 
-The default file is committed with the Phase 1 values:
+The file is organised into two sections for readability: `required` holds
+the four Phase 1 base criteria, `optional` lists every optional preference
+key where `null` means "no restriction". The default file is committed with
+the Phase 1 values:
 
 ```json
 {
-  "price_min": 550000,
-  "price_max": 750000,
-  "bedrooms_min": 3,
-  "bedrooms_max": null,
-  "living_area_min": 100,
-  "living_area_max": null,
-  "rooms_min": null,
-  "rooms_max": null,
-  "plot_size_min": null,
-  "plot_size_max": null,
-  "property_type": null,
-  "energy_label_min": null,
-  "energy_label_max": null,
-  "transaction_type": null,
-  "radius_km": null,
-  "construction_type": null
+    "required": {
+        "price_min": 550000,
+        "price_max": 750000,
+        "bedrooms_min": 3,
+        "living_area_min": 100
+    },
+    "optional": {
+        "bedrooms_max": null,
+        "living_area_max": null,
+        "rooms_min": null,
+        "rooms_max": null,
+        "plot_size_min": null,
+        "plot_size_max": null,
+        "property_type": null,
+        "energy_label_min": null,
+        "energy_label_max": null,
+        "transaction_type": null,
+        "radius_km": null,
+        "construction_type": null
+    }
 }
 ```
 
@@ -759,8 +766,13 @@ The default file is committed with the Phase 1 values:
 | `construction_type` | str / null | none    | Exact construction type: `existing`/`new`   |
 
 The `null` optional values mean "no preference filter". Missing keys fall
-back to the defaults shown above. Unknown keys are rejected so a typo cannot
-silently change behavior.
+back to the defaults shown above. Each key must appear in its own section
+(`required` for the four base criteria, `optional` for everything else);
+a misplaced key, an unknown key inside a section, a non-object section, or
+mixing sectioned and flat top-level keys is rejected with a clear error.
+The legacy flat layout (all filter keys at the top level, no sections) is
+still accepted by `FilterConfig.from_file()` for backward compatibility.
+Unknown keys are rejected so a typo cannot silently change behavior.
 
 **Ranged vs single-value filters.** Most numeric filters are **ranged**
 (`*_min` / `*_max` pairs). On the search URL a bound set to `null` is

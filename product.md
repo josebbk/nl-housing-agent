@@ -142,7 +142,9 @@ for secrets and is not used for filter configuration.
 ### Optional Phase 2 preference filters
 
 The base filters above can be narrowed with optional preferences configured in
-`config/filters.json`. They fall into two groups:
+`config/filters.json`. In the file itself the four base criteria live under
+the `required` key and every optional preference under the `optional` key
+(where `null` means "no restriction"). The preferences fall into two groups:
 
 **Ranged filters (each has a `_min` and `_max` key):**
 
