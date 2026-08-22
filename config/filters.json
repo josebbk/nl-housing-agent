@@ -1,18 +1,22 @@
 {
-  "price_min": 550000,
-  "price_max": 750000,
-  "bedrooms_min": 3,
-  "bedrooms_max": null,
-  "living_area_min": 100,
-  "living_area_max": null,
-  "rooms_min": null,
-  "rooms_max": null,
-  "plot_size_min": null,
-  "plot_size_max": null,
-  "property_type": null,
-  "energy_label_min": null,
-  "energy_label_max": null,
-  "transaction_type": null,
-  "radius_km": null,
-  "construction_type": null
+    "required": {
+        "price_min": 550000,
+        "price_max": 750000,
+        "bedrooms_min": 3,
+        "living_area_min": 100
+    },
+    "optional": {
+        "bedrooms_max": null,
+        "living_area_max": null,
+        "rooms_min": null,
+        "rooms_max": null,
+        "plot_size_min": null,
+        "plot_size_max": null,
+        "property_type": null,
+        "energy_label_min": null,
+        "energy_label_max": null,
+        "transaction_type": null,
+        "radius_km": null,
+        "construction_type": null
+    }
 }

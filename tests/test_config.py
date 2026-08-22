@@ -344,6 +344,151 @@ class FilterConfigFileTestCase(unittest.TestCase):
         self.assertFalse(hasattr(config, "_load_env"))
 
 
+class FilterConfigSectionedFileTestCase(unittest.TestCase):
+    """Tests for the human-friendly sectioned filters.json layout.
+
+    The committed file separates the four required Phase 1 criteria (under
+    ``"required"``) from the optional preference keys (under ``"optional"``,
+    where ``null`` means "no restriction"). The legacy flat layout remains
+    accepted. Each test uses an isolated temporary ``filters.json`` except
+    where the real committed file is inspected deliberately.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.filters_path = Path(self._tmp.name) / "filters.json"
+
+    def _write(self, obj):
+        self.filters_path.write_text(json.dumps(obj), encoding="utf-8")
+
+    def _sectioned_defaults(self):
+        return {
+            "required": {
+                "price_min": 550000,
+                "price_max": 750000,
+                "bedrooms_min": 3,
+                "living_area_min": 100,
+            },
+            "optional": {
+                key: None
+                for key in (
+                    "bedrooms_max", "living_area_max", "rooms_min",
+                    "rooms_max", "plot_size_min", "plot_size_max",
+                    "property_type", "energy_label_min", "energy_label_max",
+                    "transaction_type", "radius_km", "construction_type",
+                )
+            },
+        }
+
+    # --- The committed file ---
+
+    def test_committed_file_uses_sectioned_layout(self):
+        raw = json.loads(config._FILTERS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(raw), ["optional", "required"])
+        self.assertEqual(set(raw["required"]), set(config._REQUIRED_FILTER_KEYS))
+        self.assertEqual(set(raw["optional"]), set(config._OPTIONAL_FILTER_KEYS))
+        self.assertEqual(
+            set(config._REQUIRED_FILTER_KEYS) | set(config._OPTIONAL_FILTER_KEYS),
+            set(config._FILTER_KEYS),
+        )
+
+    def test_committed_file_loads_phase1_defaults(self):
+        self.assertEqual(FilterConfig.from_file(), DEFAULT_FILTERS)
+
+    # --- Loading sectioned values ---
+
+    def test_sectioned_defaults_equal_default_filters(self):
+        self._write(self._sectioned_defaults())
+        self.assertEqual(FilterConfig.from_file(self.filters_path), DEFAULT_FILTERS)
+
+    def test_sectioned_custom_values_load(self):
+        payload = self._sectioned_defaults()
+        payload["required"]["price_min"] = 400000
+        payload["required"]["bedrooms_min"] = 4
+        payload["optional"]["property_type"] = "appartement"
+        payload["optional"]["plot_size_min"] = 50
+        self._write(payload)
+
+        filters = FilterConfig.from_file(self.filters_path)
+        self.assertEqual(filters.price_min, 400000)
+        self.assertEqual(filters.bedrooms_min, 4)
+        self.assertEqual(filters.property_type, "appartement")
+        self.assertEqual(filters.plot_size_min, 50)
+        self.assertEqual(filters.price_max, 750000)
+        self.assertIsNone(filters.energy_label_min)
+
+    def test_missing_optional_section_becomes_none(self):
+        self._write({"required": {"price_min": 550000}})
+        filters = FilterConfig.from_file(self.filters_path)
+        self.assertEqual(filters.price_min, 550000)
+        self.assertEqual(filters.price_max, 750000)
+        self.assertIsNone(filters.property_type)
+        self.assertIsNone(filters.radius_km)
+
+    def test_null_optional_values_in_sections_mean_no_restriction(self):
+        payload = self._sectioned_defaults()
+        payload["optional"]["transaction_type"] = None
+        payload["optional"]["rooms_max"] = None
+        self._write(payload)
+
+        filters = FilterConfig.from_file(self.filters_path)
+        self.assertIsNone(filters.transaction_type)
+        self.assertIsNone(filters.rooms_max)
+
+    def test_legacy_flat_layout_still_supported(self):
+        self._write({"transaction_type": "huur"})
+        self.assertEqual(
+            FilterConfig.from_file(self.filters_path).transaction_type, "huur"
+        )
+
+    # --- Structural rejection ---
+
+    def test_mixed_flat_and_sectioned_layout_rejected(self):
+        self._write({
+            "price_min": 400000,
+            "optional": {"property_type": "appartement"},
+        })
+        with self.assertRaises(ValueError):
+            FilterConfig.from_file(self.filters_path)
+
+    def test_unknown_top_level_key_alongside_sections_rejected(self):
+        payload = self._sectioned_defaults()
+        payload["price_minn"] = 400000
+        self._write(payload)
+        with self.assertRaises(ValueError):
+            FilterConfig.from_file(self.filters_path)
+
+    def test_non_object_section_rejected(self):
+        for bad_section in [{"required": [1, 2]}, {"optional": "nope"}]:
+            with self.subTest(bad_section=bad_section):
+                self._write(bad_section)
+                with self.assertRaises(ValueError):
+                    FilterConfig.from_file(self.filters_path)
+
+    def test_required_key_in_optional_section_rejected(self):
+        self._write({"optional": {"price_min": 100}})
+        with self.assertRaises(ValueError):
+            FilterConfig.from_file(self.filters_path)
+
+    def test_optional_key_in_required_section_rejected(self):
+        self._write({"required": {"property_type": "appartement"}})
+        with self.assertRaises(ValueError):
+            FilterConfig.from_file(self.filters_path)
+
+    def test_unknown_key_inside_section_rejected(self):
+        self._write({"optional": {"bedrooms_maximum": 5}})
+        with self.assertRaises(ValueError):
+            FilterConfig.from_file(self.filters_path)
+
+    def test_invalid_value_inside_section_still_rejected(self):
+        payload = self._sectioned_defaults()
+        payload["required"]["price_min"] = "cheap"
+        self._write(payload)
+        with self.assertRaises(ValueError):
+            FilterConfig.from_file(self.filters_path)
+
+
 class FilterConfigConstructionTestCase(unittest.TestCase):
     """Immutability and direct-construction validation."""
 
