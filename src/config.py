@@ -7,6 +7,13 @@ Phase 1 hardcoded filter values serve as the defaults. Secrets and
 environment-specific sensitive values stay in ``.env`` (loaded by
 ``src/notifier.py``), never in the filter file.
 
+The filter file is organised into two sections so it stays readable for a
+non-developer owner: ``"required"`` holds the four Phase 1 base criteria
+(with their current values), ``"optional"`` lists every optional preference
+key where ``null`` means "no restriction". A key must appear in its own
+section. The older flat layout (all keys at the top level) is still
+accepted for backward compatibility.
+
 Only this module defines the filter defaults. ``storage.py`` and ``main.py``
 must import ``DEFAULT_FILTERS`` / ``FilterConfig`` from here rather than
 redefining them.
@@ -28,14 +35,21 @@ _PHASE1_PRICE_MAX = 750_000
 _PHASE1_BEDROOMS_MIN = 3
 _PHASE1_LIVING_AREA_MIN = 100
 
-# Recognised keys in config/filters.json. Unknown keys are rejected so a typo
-# cannot silently fall back to the defaults.
-_FILTER_KEYS = (
+# Recognised keys in config/filters.json, split into the two sections of the
+# human-friendly file layout. Unknown keys are rejected so a typo cannot
+# silently fall back to the defaults.
+_REQUIRED_SECTION = "required"
+_OPTIONAL_SECTION = "optional"
+
+_REQUIRED_FILTER_KEYS = (
     "price_min",
     "price_max",
     "bedrooms_min",
-    "bedrooms_max",
     "living_area_min",
+)
+
+_OPTIONAL_FILTER_KEYS = (
+    "bedrooms_max",
     "living_area_max",
     "rooms_min",
     "rooms_max",
@@ -48,6 +62,68 @@ _FILTER_KEYS = (
     "radius_km",
     "construction_type",
 )
+
+_FILTER_KEYS = _REQUIRED_FILTER_KEYS + _OPTIONAL_FILTER_KEYS
+
+
+def _flatten_filter_file(raw: dict, path: Path) -> dict:
+    """Normalise a parsed filter file into a flat ``{key: value}`` mapping.
+
+    Accepts both supported layouts:
+
+    * the current sectioned layout with ``"required"`` and/or ``"optional"``
+      objects as the only top-level keys, and
+    * the legacy flat layout where filter keys sit at the top level.
+
+    Raises ``ValueError`` when a section is not a JSON object, when a key
+    appears in the wrong section, when an unknown key appears inside a
+    section, or when sectioned and flat layouts are mixed.
+    """
+    if _REQUIRED_SECTION not in raw and _OPTIONAL_SECTION not in raw:
+        return raw
+
+    unknown_top = sorted(
+        key for key in raw if key not in (_REQUIRED_SECTION, _OPTIONAL_SECTION)
+    )
+    if unknown_top:
+        raise ValueError(
+            f"Filter file {path} mixes filter keys ({', '.join(unknown_top)}) "
+            f'with the "{_REQUIRED_SECTION}"/"{_OPTIONAL_SECTION}" sections. '
+            f"Put every filter key inside its section."
+        )
+
+    flat: dict = {}
+    for section, allowed in (
+        (_REQUIRED_SECTION, frozenset(_REQUIRED_FILTER_KEYS)),
+        (_OPTIONAL_SECTION, frozenset(_OPTIONAL_FILTER_KEYS)),
+    ):
+        if section not in raw:
+            continue
+        body = raw[section]
+        if not isinstance(body, dict):
+            raise ValueError(
+                f'Filter file {path}: "{section}" must be a JSON object, '
+                f"got {type(body).__name__}."
+            )
+        other = (
+            _OPTIONAL_FILTER_KEYS if section == _REQUIRED_SECTION
+            else _REQUIRED_FILTER_KEYS
+        )
+        for key, value in body.items():
+            if key in other:
+                raise ValueError(
+                    f'Filter file {path}: "{key}" belongs in the '
+                    f'"{_OPTIONAL_SECTION if section == _REQUIRED_SECTION else _REQUIRED_SECTION}"'
+                    f" section, not \"{section}\"."
+                )
+            if key not in allowed:
+                raise ValueError(
+                    f"Filter file {path}: unknown key {key!r} in "
+                    f'"{section}" section. Expected keys: '
+                    f"{', '.join(allowed)}."
+                )
+            flat[key] = value
+    return flat
 
 
 @dataclass(frozen=True)
@@ -194,9 +270,11 @@ class FilterConfig:
 
         Defaults to ``config/filters.json`` relative to the project root, so
         execution from cron, systemd, or tmux does not depend on the process
-        working directory. Missing required keys fall back to the Phase 1
-        defaults; missing optional keys become ``None``. Unknown keys and
-        invalid values raise ``ValueError`` (never silently coerced).
+        working directory. The file may use the sectioned layout
+        (``"required"`` / ``"optional"`` objects) or the legacy flat layout.
+        Missing required keys fall back to the Phase 1 defaults; missing
+        optional keys become ``None``. Unknown keys and invalid values raise
+        ``ValueError`` (never silently coerced).
         """
         path = Path(path) if path is not None else _FILTERS_PATH
         try:
@@ -211,7 +289,9 @@ class FilterConfig:
                 f"Filter file {path} must contain a JSON object, got {type(raw).__name__}."
             )
 
-        unknown = sorted(key for key in raw if key not in _FILTER_KEYS)
+        flat = _flatten_filter_file(raw, path)
+
+        unknown = sorted(key for key in flat if key not in _FILTER_KEYS)
         if unknown:
             raise ValueError(
                 f"Filter file {path} contains unknown key(s): {', '.join(unknown)}. "
@@ -219,22 +299,22 @@ class FilterConfig:
             )
 
         return cls(
-            price_min=raw.get("price_min", _PHASE1_PRICE_MIN),
-            price_max=raw.get("price_max", _PHASE1_PRICE_MAX),
-            bedrooms_min=raw.get("bedrooms_min", _PHASE1_BEDROOMS_MIN),
-            living_area_min=raw.get("living_area_min", _PHASE1_LIVING_AREA_MIN),
-            bedrooms_max=raw.get("bedrooms_max"),
-            living_area_max=raw.get("living_area_max"),
-            rooms_min=raw.get("rooms_min"),
-            rooms_max=raw.get("rooms_max"),
-            plot_size_min=raw.get("plot_size_min"),
-            plot_size_max=raw.get("plot_size_max"),
-            property_type=raw.get("property_type"),
-            energy_label_min=raw.get("energy_label_min"),
-            energy_label_max=raw.get("energy_label_max"),
-            transaction_type=raw.get("transaction_type"),
-            radius_km=raw.get("radius_km"),
-            construction_type=raw.get("construction_type"),
+            price_min=flat.get("price_min", _PHASE1_PRICE_MIN),
+            price_max=flat.get("price_max", _PHASE1_PRICE_MAX),
+            bedrooms_min=flat.get("bedrooms_min", _PHASE1_BEDROOMS_MIN),
+            living_area_min=flat.get("living_area_min", _PHASE1_LIVING_AREA_MIN),
+            bedrooms_max=flat.get("bedrooms_max"),
+            living_area_max=flat.get("living_area_max"),
+            rooms_min=flat.get("rooms_min"),
+            rooms_max=flat.get("rooms_max"),
+            plot_size_min=flat.get("plot_size_min"),
+            plot_size_max=flat.get("plot_size_max"),
+            property_type=flat.get("property_type"),
+            energy_label_min=flat.get("energy_label_min"),
+            energy_label_max=flat.get("energy_label_max"),
+            transaction_type=flat.get("transaction_type"),
+            radius_km=flat.get("radius_km"),
+            construction_type=flat.get("construction_type"),
         )
 
 
