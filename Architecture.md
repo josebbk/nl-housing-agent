@@ -548,6 +548,85 @@ score breakdown. The format is:
   mapped to human-readable labels (e.g. "Neighborhood") in
   `notifier.py::_CRITERION_LABELS`. This mapping is presentation-only.
 
+#### Key property metrics (MVP extension)
+
+The header was extended with reliably available listing metrics. Missing
+metrics are omitted from the optional lines — never invented or shown as
+placeholder values:
+
+```
+🏠 {address}
+€{price} · {living_area} m² · €{price_per_m2}/m² · {bedrooms} bedrooms
+{property_type} · {neighborhood}
+Plot {plot_size_m2} m² · Label {energy_label} · Built {year_built}
+{ownership_type}[(€{canon}/yr)] · {status}
+
+⭐ {score}/100
+...
+```
+
+* **Price per m²** — computed strictly from the two required fields
+  (`price / living_area_m2`); rendered only when both are present.
+* **Facts line** — `Plot … m²`, `Label …`, `Built …` segments appear only
+  when the respective field is non-null (`plot_size_m2`, `energy_label`,
+  `year_built`).
+* **Ownership/status line** — `Eigendom` for full ownership,
+  `Erfpacht (€408,85/yr)` for leasehold with an annual canon (Dutch
+  decimal convention), `Erfpacht` without canon when unknown. The listing
+  status (e.g. `Beschikbaar`) is appended when available.
+* The score sections and URL line are unchanged.
+
+### Property images in notifications
+
+Each listing notification attaches up to **exactly 3 property photos**
+belonging to the same listing. The pipeline spans two components:
+
+**Extraction (`detail_scraper.py`)**
+
+* During the existing detail-page Playwright render pass (no extra page
+  fetch), a JS collector gathers candidate URLs from
+  `meta[property="og:image"]`, gallery `<img>` `src`/`currentSrc`, and the
+  largest `srcset` candidate, in document order (hero/facade photo first).
+* Candidates are filtered to https URLs on Funda's own photo CDN
+  (`cloud.funda.nl` with a `/valentina…` media path). Confirmed live
+  2026-08-23; UI assets, foreign hosts (e.g. `*.funda.io` infrastructure)
+  and non-image extensions are rejected.
+* Size variants of the same photo (`775_1440x960.jpg`,
+  `775.jpg?options=width=720`) collapse onto one canonical URL requested
+  at `?options=width=1440`; dedupe preserves gallery order; output is
+  capped at 10 URLs and returned as `image_urls` in the detail dict.
+* Photo extraction failure never fails the detail fetch — the field is
+  omitted and the notification degrades to text-only.
+* Image URLs ride the in-memory detail→notification data flow (merged
+  into the listing dict by `main.py`). They are intentionally NOT stored
+  as database columns — storage schema and Phase 1/2 contracts stay
+  unchanged.
+
+**Selection, download and delivery (`notifier.py`)**
+
+* `_select_images()` deterministically takes the first 3 unique http(s)
+  URLs from `listing["image_urls"]` (gallery order preserved, no
+  randomness). Fewer than 3 valid URLs → all valid ones are used.
+* Each image is downloaded via urllib into a per-notification temporary
+  directory with: 20 s timeout, 10 MB hard cap (streamed enforcement),
+  `image/*` Content-Type check, magic-byte validation (JPEG/PNG/WEBP/GIF)
+  before writing, so error pages served with a misleading Content-Type are
+  rejected. Files are written only after validation (no partial files).
+  The temp directory is always removed afterwards.
+* Delivery is text-first: `sendMessage` delivers the rich message and
+  gates the notified state. Photos are then uploaded best-effort as ONE
+  album — `sendPhoto` for a single image, `sendMediaGroup` (multipart,
+  caption = HTML-escaped address on the first item) for 2–3 images.
+* Failure semantics:
+  * text send fails → notification failed; the listing stays unnotified
+    and is retried on a later run;
+  * any individual image download fails → that image is skipped;
+    remaining photos still ship;
+  * all downloads fail → text-only notification stands, result is success;
+  * album upload fails after the text was delivered → logged warning,
+    result stays success. Retrying would duplicate the already-delivered
+    text message, which the project forbids.
+
 ### Notification score threshold
 
 A `notification_score_threshold` value (default 80) is configured in
@@ -912,7 +991,7 @@ DB writes, gating) is unchanged:
 | 6 | `_insert_listings_into_storage()` | Shared persistence stage (standard run + seed); returns classified `InsertResult` |
 | 7 | `fetch_unnotified_matching_listings(...)` | Matching via storage (full filter config applied there) |
 | 8 | `_score_and_persist_listing()` | Shared detail-fetch/score/persist core (standard run, seed, backfill) |
-| 9 | `_apply_full_scan_gate()` + notify | Task 2 gating at `GATING_THRESHOLD = 70`, then notification |
+| 9 | `_apply_full_scan_gate()` + notify | Task 2 gating at `GATING_THRESHOLD = 70`, then notification (rich message + up to 3 property photos; see "Property images in notifications") |
 | 10 | `_finalise_run()` | Filter snapshot save, stale-listing archival, run summary, last-successful-run |
 
 Pipeline order (`configuration → scrape → persist → match`) and the
