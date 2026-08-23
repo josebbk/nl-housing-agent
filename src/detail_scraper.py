@@ -7,6 +7,12 @@ detail fields. Any field that cannot be parsed is set to None — never
 omitted, never guessed.
 
 Must not raise on missing/absent sections — absence is expected and normal.
+
+Also extracts property photo URLs from the rendered detail page. Photos are
+collected in gallery document order (hero/facade photo first), restricted
+to Funda's own image CDN, deduplicated across size variants, and capped at
+_MAX_IMAGE_URLS so downstream consumers (notifier.py) can deterministically
+select the first three.
 """
 
 import logging
@@ -17,10 +23,25 @@ import urllib.request
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright, Page, Browser
 
 logger = logging.getLogger(__name__)
+
+# Property photos live on Funda's own CDN under a "valentina" media path.
+# Confirmed live 2026-08-23:
+#   https://cloud.funda.nl/valentina_media/230/205/775.jpg?options=width=1080
+#   https://cloud.funda.nl/valentina_media/230/205/775_1440x960.jpg
+_PROPERTY_IMAGE_HOST = "cloud.funda.nl"
+_PROPERTY_IMAGE_PATH_MARKER = "/valentina"
+_IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|webp|gif)$", re.IGNORECASE)
+# Sized variants embed the dimensions before the extension: ..._1440x960.jpg
+_SIZE_SUFFIX_RE = re.compile(r"_\d+x\d+(?=\.\w+$)", re.IGNORECASE)
+# Canonical download resolution requested from the CDN (?options=width=N).
+_PROPERTY_IMAGE_WIDTH = 1440
+# Upper bound on returned photo URLs (bounded payload; notifier uses 3).
+_MAX_IMAGE_URLS = 10
 
 # ---------------------------------------------------------------------------
 # HTTP fetching — reuses the same Akamai-bypass technique from scraper.py
@@ -82,6 +103,7 @@ class DetailData:
     year_built: Optional[int] = None
     status: Optional[str] = None
     plot_size_m2: Optional[int] = None
+    image_urls: Optional[list] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -1071,6 +1093,89 @@ def _extract_plot_size(kenmerken_body: Optional[str]) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# Property image extraction
+# ---------------------------------------------------------------------------
+
+_COLLECT_IMAGE_URLS_JS = """
+() => {
+    const out = [];
+    const seen = new Set();
+    const push = u => {
+        if (!u || seen.has(u)) return;
+        seen.add(u);
+        out.push(u);
+    };
+    document.querySelectorAll('meta[property="og:image"]').forEach(m => {
+        push(m.content);
+    });
+    document.querySelectorAll('img').forEach(img => {
+        push(img.currentSrc || img.src);
+        if (img.srcset) {
+            const cands = img.srcset.split(',')
+                .map(s => s.trim().split(/\\s+/)[0])
+                .filter(Boolean);
+            if (cands.length) push(cands[cands.length - 1]);
+        }
+    });
+    return out;
+}
+"""
+
+
+def _canonical_image_url(url: str) -> Optional[str]:
+    """Normalise one raw CDN URL to the canonical full-size photo URL.
+
+    * strips any query string (``?options=width=720`` etc.);
+    * strips embedded size suffixes (``775_1440x960.jpg`` -> ``775.jpg``);
+    * re-requests the photo at the canonical width
+      (``?options=width=<n>``), which the CDN serves for media paths.
+
+    Returns None when the URL is not a Funda property-photo URL.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme != "https":
+        return None
+    if parts.netloc.lower() != _PROPERTY_IMAGE_HOST:
+        return None
+    path = parts.path
+    if _PROPERTY_IMAGE_PATH_MARKER not in path:
+        return None
+    path = _SIZE_SUFFIX_RE.sub("", path)
+    if not _IMAGE_EXT_RE.search(path):
+        return None
+    return (
+        f"https://{_PROPERTY_IMAGE_HOST}{path}"
+        f"?options=width={_PROPERTY_IMAGE_WIDTH}"
+    )
+
+
+def _extract_property_image_urls(raw_urls: list) -> list[str]:
+    """Filter, normalise, dedupe and cap raw page image URLs.
+
+    Only https URLs on Funda's property-photo CDN are kept. The same photo
+    referenced through several size variants collapses to its canonical
+    form; first-seen gallery order is preserved. Output is capped at
+    ``_MAX_IMAGE_URLS``.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in raw_urls or []:
+        if not isinstance(raw, str):
+            continue
+        canonical = _canonical_image_url(raw.strip())
+        if not canonical or canonical in seen:
+            continue
+        seen.add(canonical)
+        result.append(canonical)
+        if len(result) >= _MAX_IMAGE_URLS:
+            break
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Main fetch function
 # ---------------------------------------------------------------------------
 
@@ -1266,6 +1371,24 @@ def fetch_listing_details(url: str) -> dict:
                 neighborhood_avg = _extract_neighborhood_avg_price(buurt_body)
                 if neighborhood_avg is not None:
                     result.neighborhood_avg_price_m2 = neighborhood_avg
+
+                # --- Property photos (same rendered page, gallery order) ---
+                try:
+                    raw_image_urls = page.evaluate(_COLLECT_IMAGE_URLS_JS)
+                    image_urls = _extract_property_image_urls(raw_image_urls)
+                    if image_urls:
+                        result.image_urls = image_urls
+                        logger.info(
+                            "Extracted %d property photo URL(s) from %s",
+                            len(image_urls), url,
+                        )
+                    else:
+                        logger.info("No property photo URLs found on %s", url)
+                except Exception as exc:
+                    # Photo extraction must never fail the detail fetch.
+                    logger.warning(
+                        "Property photo extraction failed for %s: %s", url, exc,
+                    )
 
             finally:
                 browser.close()
