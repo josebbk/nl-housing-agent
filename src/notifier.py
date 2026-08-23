@@ -5,12 +5,26 @@ Loads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from .env via python-dotenv.
 Sends formatted messages to a Telegram group chat when matching listings
 are found.
 
+Each listing notification consists of the rich text message (sendMessage)
+followed by up to 3 property photos (sendPhoto/sendMediaGroup) belonging to
+the same listing. Image URLs arrive in the listing dict under ``image_urls``
+(extracted from the Funda detail page by detail_scraper.py). The text
+message is the authoritative notification: it gates the notified state.
+Photos are best-effort — individual download failures never fail the
+notification, and a failed album upload never triggers a resend of the
+already-delivered text message (no duplicates).
+
 Does NOT import storage.py or scraper.py — orchestration belongs in main.py.
 """
 
+import html
+import io
 import json
 import logging
 import os
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
 from urllib import request, error
 
@@ -27,7 +41,22 @@ _ENV_PATH = _PROJECT_ROOT / ".env"
 
 _TELEGRAM_API_BASE = "https://api.telegram.org"
 _SEND_MSG_PATH = "/bot{token}/sendMessage"
+_SEND_PHOTO_PATH = "/bot{token}/sendPhoto"
+_SEND_MEDIA_GROUP_PATH = "/bot{token}/sendMediaGroup"
 _MESSAGE_DELAY = 1.1  # seconds between messages (Telegram rate limit safety)
+
+# --- Image handling constants ---
+# Exactly 3 property photos are attached per listing when at least 3 valid
+# image URLs are available; fewer images are sent as-is.
+MAX_IMAGES_PER_LISTING = 3
+_IMAGE_DOWNLOAD_TIMEOUT = 20  # seconds
+_TELEGRAM_SEND_TIMEOUT = 30  # seconds
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024  # hard cap per downloaded image
+_IMAGE_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/139.0.0.0 Safari/537.36"
+)
 
 # Display-name mapping for scoring criteria.
 # Raw keys come from scoring.py / config/preferences.json weights;
@@ -87,9 +116,12 @@ def _get_chat_id() -> str:
 def _format_listing_message(listing: dict) -> str:
     """Format a listing dict into a clean Telegram HTML message.
 
-    New notification format (Task 3):
+    New notification format (Task 3, extended with key property metrics):
 
-    - Header: address, price, living area, bedrooms, property type, neighborhood
+    - Header: address, price, living area, €/m², bedrooms, property type,
+      neighborhood
+    - Key facts line (only when reliably available): plot size, energy
+      label, year built; ownership type (+ annual lease canon) and status
     - Score section with confidence flag and best/weakest criteria
     - Full score breakdown with N/A for missing criteria
     - Listing URL
@@ -98,6 +130,9 @@ def _format_listing_message(listing: dict) -> str:
     ``score``, ``score_breakdown`` (JSON list of {criterion,
     points_earned, points_possible, matched}), and
     ``score_confidence`` already produced by ``scoring.py``.
+    Metrics that are missing are omitted from the optional lines — never
+    invented. Price-per-m² is computed only from the two required fields
+    (price, living_area_m2).
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -110,15 +145,54 @@ def _format_listing_message(listing: dict) -> str:
     neighborhood = listing.get("neighborhood", "") or ""
     url = listing.get("url", "")
 
+    # Price per m² — computed strictly from the two reliable required fields.
+    price_per_m2_text = None
+    if price and living_area:
+        price_per_m2_text = f"{price / living_area:,.0f}"
+
     # --- Header ---
     parts: list[str] = []
     parts.append(f"\U0001f3e0 <b>{address}</b>")
-    parts.append(f"\u20ac{price_text} \u00b7 {area_text} \u00b7 {bed_text} bedrooms")
+    header_line = f"\u20ac{price_text} \u00b7 {area_text}"
+    if price_per_m2_text:
+        header_line += f" \u00b7 \u20ac{price_per_m2_text}/m\u00b2"
+    header_line += f" \u00b7 {bed_text} bedrooms"
+    parts.append(header_line)
     if property_type or neighborhood:
         type_and_area = " \u00b7 ".join(
             part for part in [property_type, neighborhood] if part
         )
         parts.append(type_and_area)
+
+    # --- Key property facts (only when reliably available) ---
+    fact_bits = []
+    if listing.get("plot_size_m2"):
+        fact_bits.append(f"Plot {listing['plot_size_m2']} m\u00b2")
+    if listing.get("energy_label"):
+        fact_bits.append(f"Label {listing['energy_label']}")
+    if listing.get("year_built"):
+        fact_bits.append(f"Built {listing['year_built']}")
+    if fact_bits:
+        parts.append(" \u00b7 ".join(fact_bits))
+
+    ownership_bits = []
+    ownership_type = listing.get("ownership_type")
+    if ownership_type == "full":
+        ownership_bits.append("Eigendom")
+    elif ownership_type == "erfpacht":
+        canon = listing.get("erfpacht_canon_annual")
+        if canon:
+            # Dutch decimal convention for the annual lease canon.
+            canon_text = f"{canon:g}".replace(".", ",")
+            ownership_bits.append(f"Erfpacht (\u20ac{canon_text}/yr)")
+        else:
+            ownership_bits.append("Erfpacht")
+    status = listing.get("status")
+    if status:
+        ownership_bits.append(str(status))
+    if ownership_bits:
+        parts.append(" \u00b7 ".join(ownership_bits))
+
     parts.append("")  # blank line before score section
 
     # --- Score section ---
@@ -296,6 +370,229 @@ def _send_message(token: str, chat_id: str, message: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Property image selection, download and album delivery
+# ---------------------------------------------------------------------------
+
+def _looks_like_image(data: bytes) -> bool:
+    """Return True when the byte payload has a known image magic number.
+
+    Guards against CDNs serving HTML error pages with a misleading
+    Content-Type.
+    """
+    if data.startswith(b"\xff\xd8\xff"):
+        return True  # JPEG
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True  # PNG
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+        return True  # WEBP
+    if data.startswith(b"GIF8"):
+        return True  # GIF
+    return False
+
+
+def _select_images(
+    image_urls, max_images: int = MAX_IMAGES_PER_LISTING,
+) -> list[str]:
+    """Deterministically select up to ``max_images`` unique image URLs.
+
+    Selection rule (documented in Architecture.md): preserve the input
+    order — which is the Funda gallery order (hero/facade photo first) —
+    skipping entries that are not http(s) URLs and exact duplicates,
+    stopping at ``max_images``. No randomness; the same input always
+    yields the same selection.
+    """
+    selected: list[str] = []
+    seen: set[str] = set()
+    for url in image_urls or []:
+        if not isinstance(url, str):
+            continue
+        candidate = url.strip()
+        if not candidate.lower().startswith(("http://", "https://")):
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        selected.append(candidate)
+        if len(selected) >= max_images:
+            break
+    return selected
+
+
+def _download_image(url: str, dest_path: Path) -> bool:
+    """Download a single property image to ``dest_path``.
+
+    Safety properties:
+    * bounded by ``_IMAGE_DOWNLOAD_TIMEOUT`` and ``_MAX_IMAGE_BYTES``;
+    * response Content-Type must be an image type;
+    * payload must carry a known image magic number before it is written;
+    * the file is written only after full validation (no partial files);
+    * any failure is logged (without secrets) and returns False — never
+      raises to the caller.
+    """
+    try:
+        req = request.Request(url, headers={
+            "User-Agent": _IMAGE_USER_AGENT,
+            "Accept": "image/*",
+        })
+        chunks: list[bytes] = []
+        budget = _MAX_IMAGE_BYTES + 1
+        with request.urlopen(req, timeout=_IMAGE_DOWNLOAD_TIMEOUT) as resp:
+            content_type = (
+                (resp.headers.get("Content-Type") or "").split(";")[0]
+                .strip().lower()
+            )
+            if not content_type.startswith("image/"):
+                logger.warning(
+                    "Image URL did not return an image (Content-Type=%s); skipping.",
+                    content_type or "none",
+                )
+                return False
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                budget -= len(chunk)
+                if budget < 0:
+                    logger.warning(
+                        "Image exceeds %d byte cap; skipping.", _MAX_IMAGE_BYTES,
+                    )
+                    return False
+                chunks.append(chunk)
+    except error.HTTPError as exc:
+        logger.warning("Image download failed (HTTP %d): %s", exc.code, exc.reason)
+        return False
+    except error.URLError as exc:
+        logger.warning("Image download failed (network error): %s", exc.reason)
+        return False
+    except Exception as exc:
+        logger.warning("Image download failed: %s", exc)
+        return False
+
+    data = b"".join(chunks)
+    if not data or not _looks_like_image(data):
+        logger.warning("Image payload is not a recognisable image; skipping.")
+        return False
+
+    dest_path.write_bytes(data)
+    return True
+
+
+def _build_multipart(fields: dict, files: dict) -> tuple[bytes, str]:
+    """Build a multipart/form-data body from text fields and file payloads.
+
+    ``files`` maps field name -> (filename, bytes). Returns (body, boundary).
+    """
+    boundary = uuid.uuid4().hex
+    buf = io.BytesIO()
+
+    def write_line(line: str) -> None:
+        buf.write(line.encode("utf-8"))
+
+    for name, value in fields.items():
+        write_line(f"--{boundary}\r\n")
+        write_line(f'Content-Disposition: form-data; name="{name}"\r\n\r\n')
+        write_line(str(value))
+        write_line("\r\n")
+    for name, (filename, data) in files.items():
+        write_line(f"--{boundary}\r\n")
+        write_line(
+            f'Content-Disposition: form-data; name="{name}"; '
+            f'filename="{filename}"\r\n'
+        )
+        write_line("Content-Type: application/octet-stream\r\n\r\n")
+        buf.write(data)
+        write_line("\r\n")
+    write_line(f"--{boundary}--\r\n")
+    return buf.getvalue(), boundary
+
+
+def _post_multipart(
+    token: str, method_path: str, fields: dict, files: dict,
+) -> bool:
+    """POST a multipart/form-data request to a Telegram Bot API method."""
+    body, boundary = _build_multipart(fields, files)
+    url = f"{_TELEGRAM_API_BASE}{method_path.format(token=token)}"
+    req = request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=_TELEGRAM_SEND_TIMEOUT) as resp:
+            resp_body = json.loads(resp.read().decode("utf-8"))
+            if resp_body.get("ok"):
+                logger.info("%s sent successfully.", method_path.split("/")[-1])
+                return True
+            logger.error(
+                "Telegram API returned error on %s: %s",
+                method_path.split("/")[-1],
+                resp_body.get("description", "unknown"),
+            )
+            return False
+    except error.HTTPError as exc:
+        if exc.code in (401, 403):
+            logger.error(
+                "Authentication failed (HTTP %d). Check TELEGRAM_BOT_TOKEN "
+                "or that the bot is in the target group.",
+                exc.code,
+            )
+        else:
+            logger.error(
+                "Telegram API HTTP error %d on %s", exc.code,
+                method_path.split("/")[-1],
+            )
+        return False
+    except Exception as exc:
+        logger.error("Failed to send %s: %s", method_path.split("/")[-1], exc)
+        return False
+
+
+def _send_images(
+    token: str, chat_id: str, image_paths: list, caption: str = "",
+) -> bool:
+    """Send 1..n downloaded images as one Telegram album for the listing.
+
+    * 1 image  -> sendPhoto (multipart upload).
+    * 2+ images -> sendMediaGroup (album; caption on the first item only).
+
+    The caption is HTML-escaped plain text (the full rich message was
+    already delivered separately via sendMessage).
+    """
+    if not image_paths:
+        return False
+
+    caption_html = html.escape(caption) if caption else ""
+
+    try:
+        if len(image_paths) == 1:
+            fields = {"chat_id": chat_id}
+            if caption_html:
+                fields["caption"] = caption_html
+                fields["parse_mode"] = "HTML"
+            files = {
+                "photo": ("photo.jpg", Path(image_paths[0]).read_bytes()),
+            }
+            return _post_multipart(token, _SEND_PHOTO_PATH, fields, files)
+
+        media = []
+        files = {}
+        for i, path in enumerate(image_paths[:10]):  # API max: 10 per album
+            attach_name = f"image{i}"
+            item = {"type": "photo", "media": f"attach://{attach_name}"}
+            if i == 0 and caption_html:
+                item["caption"] = caption_html
+                item["parse_mode"] = "HTML"
+            media.append(item)
+            files[attach_name] = (f"image{i}.jpg", Path(path).read_bytes())
+        fields = {"chat_id": chat_id, "media": json.dumps(media)}
+        return _post_multipart(token, _SEND_MEDIA_GROUP_PATH, fields, files)
+    except Exception as exc:
+        logger.error("Image album upload failed: %s", exc)
+        return False
+
+
 def _get_failure_topic_id() -> str:
     """Return the Telegram failure-alert topic ID from environment."""
     _load_env()
@@ -359,23 +656,95 @@ def send_failure_alert(message: str) -> bool:
 def send_listing_notification(listing: dict) -> bool:
     """Send a Telegram notification for a single listing.
 
+    Delivery flow (one coherent notification per listing):
+      1. send the rich text message via sendMessage — this is the
+         authoritative notification and gates the caller's notified state;
+      2. select up to 3 property images (deterministic, from
+         ``listing["image_urls"]`` produced by detail_scraper.py);
+      3. download them into a temporary directory (individual failures
+         are skipped, never fatal);
+      4. upload the successfully downloaded images as one album
+         (sendPhoto / sendMediaGroup) captioned with the address;
+      5. always clean up the temporary files.
+
+    Failure semantics:
+    * text message fails        -> return False; the caller leaves the
+      listing unnotified so it is retried on a later run.
+    * all image downloads fail  -> the text-only notification stands;
+      return True (no retry, no duplicate text message).
+    * album upload fails after a delivered text message -> logged as a
+      warning; return True. Retrying would duplicate the text message.
+
     Parameters
     ----------
     listing : dict
-        A listing dict with the same structure produced by scraper.py
-        (listing_id, url, address, price, living_area_m2, bedrooms, etc.).
+        A listing dict with the same structure produced by scraper.py /
+        detail_scraper.py (listing_id, url, address, price,
+        living_area_m2, bedrooms, ..., optional ``image_urls``).
 
     Returns
     -------
     bool
-        True if the message was sent successfully, False otherwise.
+        True if the notification was delivered (with or without photos),
+        False only when the text message itself could not be sent.
     """
     token = _get_token()
     chat_id = _get_chat_id()
     message = _format_listing_message(listing)
 
     logger.info("Sending notification for listing %s (%s)", listing.get("listing_id"), listing.get("address"))
-    return _send_message(token, chat_id, message)
+    if not _send_message(token, chat_id, message):
+        return False
+
+    # --- Best-effort property photos (same listing identity) ---
+    selected_urls = _select_images(listing.get("image_urls"))
+    if not selected_urls:
+        logger.info(
+            "No property images available for listing %s; "
+            "text-only notification delivered.",
+            listing.get("listing_id"),
+        )
+        return True
+
+    tmp_dir = tempfile.mkdtemp(prefix="funda-images-")
+    try:
+        downloaded_paths = []
+        for i, image_url in enumerate(selected_urls):
+            dest = Path(tmp_dir) / f"image_{i}.jpg"
+            if _download_image(image_url, dest):
+                downloaded_paths.append(dest)
+            else:
+                logger.warning(
+                    "Skipping unavailable image %d for listing %s.",
+                    i + 1, listing.get("listing_id"),
+                )
+
+        if not downloaded_paths:
+            logger.warning(
+                "All image downloads failed for listing %s; "
+                "text-only notification already delivered.",
+                listing.get("listing_id"),
+            )
+            return True
+
+        if _send_images(
+            token, chat_id, downloaded_paths,
+            caption=listing.get("address") or "",
+        ):
+            logger.info(
+                "Sent %d photo(s) for listing %s.",
+                len(downloaded_paths), listing.get("listing_id"),
+            )
+        else:
+            logger.warning(
+                "Photo album upload failed for listing %s; the text "
+                "notification was already delivered (no retry to avoid "
+                "duplicates).",
+                listing.get("listing_id"),
+            )
+        return True
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def send_notifications(listings: list[dict], delay: float = _MESSAGE_DELAY) -> list[bool]:
