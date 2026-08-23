@@ -803,6 +803,9 @@ A test notification should confirm:
 * The message contains the expected listing information.
 * The Funda URL is present.
 * No secret is included in the message.
+* When the listing carries `image_urls` (detail-page scrape), up to 3
+  photos of that listing arrive as one album right after the text
+  message; with no `image_urls`, a text-only notification is delivered.
 
 Real notification testing should not be mixed into every scraper debugging run.
 
@@ -946,6 +949,25 @@ Action:
 * log the failure without exposing credentials
 * do not falsely report a notification as sent
 * preserve enough information to retry safely later
+
+### Image delivery failure
+
+Property photos are best-effort additions to an already-delivered text
+notification (see Architecture.md → "Property images in notifications"):
+
+* a single image download failure is logged as a warning and that image
+  is skipped; the remaining photos still ship;
+* when all downloads fail, the text-only notification stands and the
+  listing IS marked notified — retrying would duplicate the delivered
+  message;
+* when the album upload fails after the text was delivered, this is
+  logged as a warning; the listing stays marked notified (no duplicate
+  notifications);
+* downloaded images live only in a temporary directory
+  (`funda-images-*` under the system temp dir) which is always removed
+  after sending; images are never stored permanently;
+* relevant warnings appear in `logs/scraper.log`
+  ("Skipping unavailable image…", "Photo album upload failed…").
 
 ---
 

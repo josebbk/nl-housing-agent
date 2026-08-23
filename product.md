@@ -187,17 +187,23 @@ At minimum, the notification should contain:
 * number of rooms
 * Funda listing URL
 
-A future version may include additional useful information such as:
+The delivered notification (MVP extension, implemented) goes beyond this
+minimum and includes:
 
-* bedrooms
-* neighborhood
-* property type
-* energy label
-* construction year
-* plot size
+* bedrooms, neighborhood, property type
+* price per m²
+* plot size, energy label, construction year
+* ownership type (with annual lease canon when applicable) and listing
+  status
+* the match score with its breakdown (Phase 2 format)
+* **up to 3 property photos of the same listing**, sent as one photo
+  album immediately after the text message. Photos are best-effort: if
+  fewer than 3 are available or some fail to download, the valid ones are
+  still sent; the text notification is never withheld because images are
+  missing.
 
-These additional fields are not required for the initial notification unless
-the implementation naturally supports them.
+Fields that a listing does not expose are omitted from the message —
+values are never invented or shown as placeholders.
 
 ---
 
