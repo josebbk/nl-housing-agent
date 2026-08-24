@@ -465,11 +465,27 @@ heating_type TEXT
 boiler_year INTEGER
 bathrooms INTEGER
 neighborhood_avg_price_m2 REAL
+image_urls TEXT
 score INTEGER
 score_breakdown TEXT
 score_confidence TEXT
 detail_fetched_at TEXT
 ```
+
+### Schema migration
+
+`storage.init_db()` is the project's only schema-migration mechanism —
+no framework. On every startup it compares the live table against the
+expected column set (PRAGMA `table_info`) and adds missing columns with
+idempotent, non-destructive `ALTER TABLE ADD COLUMN` statements
+(`phase2_columns` list in `storage.py`). This upgraded legacy runtime
+databases that predated later features: e.g. the production
+`data/funda.db` (which ended at `detail_fetched_at`) gained
+`last_seen_at` and `image_urls TEXT` automatically on the first
+`init_db()` call after the rich-photo feature. Existing rows keep all
+values; new columns start as NULL and are populated on subsequent
+detail fetches. The `listings_archive` table always mirrors the
+`listings` column set because archival uses `SELECT *`.
 
 ### Browser usage
 
@@ -597,10 +613,20 @@ belonging to the same listing. The pipeline spans two components:
   capped at 10 URLs and returned as `image_urls` in the detail dict.
 * Photo extraction failure never fails the detail fetch — the field is
   omitted and the notification degrades to text-only.
-* Image URLs ride the in-memory detail→notification data flow (merged
-  into the listing dict by `main.py`). They are intentionally NOT stored
-  as database columns — storage schema and Phase 1/2 contracts stay
-  unchanged.
+* Image URLs are persisted in the `listings.image_urls` column as a
+  JSON-encoded TEXT array (NULL when no photos were found). Storage
+  serialises on write (`insert_listing`), decodes back into a list on
+  read (`fetch_unnotified_matching_listings`), and preserves stored
+  URLs on card-level re-inserts via the existing detail-field
+  preservation pattern. `notifier.py` also accepts the JSON TEXT form
+  defensively (raw DB rows, e.g. from the backfill flow).
+
+> **Superseded note:** an earlier revision of this section stated that
+> image URLs ride the in-memory detail→notification data flow only and
+> are not stored in the database. That design was replaced by the
+> persisted `image_urls` column described above after the runtime
+> schema mismatch surfaced; the paragraph is kept for historical
+> context.
 
 **Selection, download and delivery (`notifier.py`)**
 
