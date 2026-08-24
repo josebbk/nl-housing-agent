@@ -511,15 +511,21 @@ The confidence flag shows `"⚠ partial data ({missing criteria})"` when
 data is incomplete, and `Score: unavailable` when no scoring data is
 available.
 
-#### Current format (Task 3 — redesigned)
+#### Current format (Task 6 — coherent media-message presentation)
 
-The notification message was redesigned to provide a structured, scannable
-score breakdown. The format is:
+The notification message was restructured into an emoji-led, scannable
+layout and is delivered together with the property photos as one
+Telegram media message (see "Property images in notifications"). The
+format is:
 
 ```
 🏠 {address}
-€{price} · {living_area} m² · {bedrooms} bedrooms
-{property_type} · {neighborhood}
+
+💰 €{price}
+📐 {living_area} m² · €{price_per_m2}/m²
+🛏 {bedrooms} bedrooms · {property_type}
+⚡ Energy label {energy_label}
+📍 {neighborhood}
 
 ⭐ {score}/100
 ⚠️ Adjusted · {missing criteria} data unavailable
@@ -541,13 +547,25 @@ score breakdown. The format is:
 
 {Criterion} N/A
 
+✨ {plot · year built · ownership · status}
+
 🔗 {url}
 ```
 
+> **Superseded (Task 6):** the previous "Task 3" layout put address,
+> price, area, bedrooms, property type and neighborhood on two `·`-joined
+> header lines and a separate facts line. That layout is replaced by the
+> emoji-structured lines above (💰 price, 📐 area + €/m², 🛏 bedrooms +
+> property type, ⚡ energy label, 📍 neighborhood, ✨ key facts). Values
+> and score semantics are unchanged; only their visual arrangement
+> changed.
+
 **Rules:**
 
-* **Header** — address on line 1, price/area/bedrooms on line 2,
-  property type and neighborhood on line 3.
+* **Header** — address on line 1; one emoji-led line per metric group
+  (💰 price, 📐 living area + price/m², 🛏 bedrooms + property type,
+  ⚡ energy label, 📍 neighborhood). Lines whose only content would be
+  missing fields are omitted entirely.
 * **Score** — `⭐ {score}/100` with bold score value.
 * **Adjusted line** — shown only when `score_confidence == "partial"`,
   listing the display names of criteria with `matched: false`.
@@ -572,21 +590,27 @@ placeholder values:
 
 ```
 🏠 {address}
-€{price} · {living_area} m² · €{price_per_m2}/m² · {bedrooms} bedrooms
-{property_type} · {neighborhood}
-Plot {plot_size_m2} m² · Label {energy_label} · Built {year_built}
-{ownership_type}[(€{canon}/yr)] · {status}
+
+💰 €{price}
+📐 {living_area} m² · €{price_per_m2}/m²
+🛏 {bedrooms} bedrooms · {property_type}
+⚡ Energy label {energy_label}
+📍 {neighborhood}
 
 ⭐ {score}/100
 ...
+
+✨ Plot {plot_size_m2} m² · Built {year_built} · {ownership} · {status}
 ```
 
 * **Price per m²** — computed strictly from the two required fields
   (`price / living_area_m2`); rendered only when both are present.
-* **Facts line** — `Plot … m²`, `Label …`, `Built …` segments appear only
-  when the respective field is non-null (`plot_size_m2`, `energy_label`,
-  `year_built`).
-* **Ownership/status line** — `Eigendom` for full ownership,
+* **Energy label** — its own `⚡ Energy label …` line, only when
+  `energy_label` is non-null.
+* **Key-facts line (`✨`)** — `Plot … m²`, `Built …`, ownership and
+  status segments appear only when the respective field is non-null
+  (`plot_size_m2`, `year_built`, `ownership_type`, `status`).
+* **Ownership** — `Eigendom` for full ownership,
   `Erfpacht (€408,85/yr)` for leasehold with an annual canon (Dutch
   decimal convention), `Erfpacht` without canon when unknown. The listing
   status (e.g. `Beschikbaar`) is appended when available.
@@ -639,19 +663,35 @@ belonging to the same listing. The pipeline spans two components:
   before writing, so error pages served with a misleading Content-Type are
   rejected. Files are written only after validation (no partial files).
   The temp directory is always removed afterwards.
-* Delivery is text-first: `sendMessage` delivers the rich message and
-  gates the notified state. Photos are then uploaded best-effort as ONE
-  album — `sendPhoto` for a single image, `sendMediaGroup` (multipart,
-  caption = HTML-escaped address on the first item) for 2–3 images.
+* Delivery (Task 6): text and photos are delivered TOGETHER as one
+  coherent media message. The full rich HTML message is sent as the
+  caption of the photo/album: `sendPhoto` for a single image,
+  `sendMediaGroup` (multipart, caption = full HTML message on the first
+  item, `parse_mode=HTML`) for 2–3 images. No standalone text message is
+  sent in this path.
+* Fallbacks — each listing still receives exactly one delivered
+  notification, never a duplicate standalone text message or duplicate
+  image messages:
+  * no `image_urls` / all downloads fail → text-only `sendMessage`
+    (the pre-Task-6 behaviour);
+  * album send fails → the notification falls back to a text-only
+    `sendMessage`; no image retry is attempted;
+  * the message exceeds Telegram's 1024-character media caption limit
+    (checked against a 1000-character safety limit) → text-first
+    presentation: `sendMessage` with the full message, then the photos
+    as an album captioned with the HTML-escaped address — so no
+    information is dropped when the caption cannot carry the text.
 * Failure semantics:
-  * text send fails → notification failed; the listing stays unnotified
+  * the authoritative notification (album-with-caption, or the text
+    fallback) fails → notification failed; the listing stays unnotified
     and is retried on a later run;
   * any individual image download fails → that image is skipped;
     remaining photos still ship;
   * all downloads fail → text-only notification stands, result is success;
-  * album upload fails after the text was delivered → logged warning,
-    result stays success. Retrying would duplicate the already-delivered
-    text message, which the project forbids.
+  * album upload fails → the notification degrades to the text-only
+    message (logged warning, result follows the text send). Retrying
+    image delivery would duplicate the already-delivered notification,
+    which the project forbids.
 
 ### Notification score threshold
 

@@ -434,9 +434,11 @@ The agent is expected to:
 2. extract relevant listing information
 3. detect listings not seen previously
 4. apply the agreed housing criteria
-5. send matching new listings to Telegram (rich message with key
-   listing metrics plus up to 3 property photos of the same listing;
-   the text message gates the notified state, photos are best-effort)
+5. send matching new listings to Telegram as one coherent notification
+   (rich message with key listing metrics plus up to 3 property photos
+   of the same listing, delivered together — the text rides as the
+   photo/album caption; when photos cannot be delivered the text
+   message alone gates the notified state, photos are best-effort)
 6. store listing information for deduplication and future analysis
 
 Exact product filtering criteria must come from the confirmed `product.md`.

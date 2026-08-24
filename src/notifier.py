@@ -5,14 +5,17 @@ Loads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from .env via python-dotenv.
 Sends formatted messages to a Telegram group chat when matching listings
 are found.
 
-Each listing notification consists of the rich text message (sendMessage)
-followed by up to 3 property photos (sendPhoto/sendMediaGroup) belonging to
-the same listing. Image URLs arrive in the listing dict under ``image_urls``
-(extracted from the Funda detail page by detail_scraper.py). The text
-message is the authoritative notification: it gates the notified state.
-Photos are best-effort — individual download failures never fail the
-notification, and a failed album upload never triggers a resend of the
-already-delivered text message (no duplicates).
+Each listing is delivered as ONE coherent Telegram notification: the rich
+HTML text (header metrics, score breakdown, key facts, Funda URL) is sent
+together with up to 3 property photos of the same listing as the caption
+of a single photo/photo-album media message (sendPhoto / sendMediaGroup).
+Image URLs arrive in the listing dict under ``image_urls`` (extracted from
+the Funda detail page by detail_scraper.py). Photos are best-effort —
+individual download failures never fail the notification. When no photos
+are available, or the text is too long for a media caption, the
+notification degrades to a text-only message (sendMessage). Exactly one
+delivered notification is produced per listing — never a duplicate
+standalone text message or duplicate image messages.
 
 Does NOT import storage.py or scraper.py — orchestration belongs in main.py.
 """
@@ -45,6 +48,12 @@ _SEND_PHOTO_PATH = "/bot{token}/sendPhoto"
 _SEND_MEDIA_GROUP_PATH = "/bot{token}/sendMediaGroup"
 _MESSAGE_DELAY = 1.1  # seconds between messages (Telegram rate limit safety)
 
+# --- Caption limits ---
+# Telegram caps photo/media-group captions at 1024 characters; a small
+# safety margin is kept for emoji width and entity parsing.
+_TELEGRAM_CAPTION_MAX_CHARS = 1024
+_CAPTION_SAFETY_LIMIT = _TELEGRAM_CAPTION_MAX_CHARS - 24
+
 # --- Image handling constants ---
 # Exactly 3 property photos are attached per listing when at least 3 valid
 # image URLs are available; fewer images are sent as-is.
@@ -72,12 +81,21 @@ _CRITERION_LABELS: dict[str, str] = {
     "rooms": "Rooms",
     "bathrooms": "Bathrooms",
     "garden": "Garden",
+    "garage": "Garage",
+    "plot_size": "Plot size",
+    "balcony": "Balcony",
+    "heating": "Heating",
 }
 
 
 def _criterion_label(key: str) -> str:
     """Return the human-readable label for a criterion key."""
     return _CRITERION_LABELS.get(key, key)
+
+
+def _fits_telegram_caption(text: str) -> bool:
+    """Return True when ``text`` fits Telegram's media caption limit."""
+    return len(text) <= _CAPTION_SAFETY_LIMIT
 
 
 def _load_env() -> None:
@@ -116,27 +134,36 @@ def _get_chat_id() -> str:
 def _format_listing_message(listing: dict) -> str:
     """Format a listing dict into a clean Telegram HTML message.
 
-    New notification format (Task 3, extended with key property metrics):
+    Notification layout (presentation-only; every value comes from the
+    listing dict exactly as produced by scraper.py / detail_scraper.py /
+    scoring.py):
 
-    - Header: address, price, living area, €/m², bedrooms, property type,
-      neighborhood
-    - Key facts line (only when reliably available): plot size, energy
-      label, year built; ownership type (+ annual lease canon) and status
-    - Score section with confidence flag and best/weakest criteria
-    - Full score breakdown with N/A for missing criteria
-    - Listing URL
+        🏠 <b>{address}</b>
+
+        💰 €{price}
+        📐 {living area} m² · €{price/m²}/m²
+        🛏 {bedrooms} bedrooms · {property type}
+        ⚡ Energy label {label}
+        📍 {neighborhood}
+
+        ⭐ <b>{score}/100</b>
+        ⚠️ Adjusted · {missing criteria} data unavailable   (partial only)
+        🟢 Best / 🔴 Weakest / 📊 Full score breakdown      (score section)
+
+        ✨ {plot · year built · ownership · status}         (available facts only)
+
+        🔗 <a href="{url}">View on Funda</a>
 
     All values are dynamically populated from the listing dict's existing
     ``score``, ``score_breakdown`` (JSON list of {criterion,
-    points_earned, points_possible, matched}), and
-    ``score_confidence`` already produced by ``scoring.py``.
-    Metrics that are missing are omitted from the optional lines — never
-    invented. Price-per-m² is computed only from the two required fields
-    (price, living_area_m2).
+    points_earned, points_possible, matched}), and ``score_confidence``
+    already produced by ``scoring.py``. Metrics that are missing are
+    omitted from the optional lines — never invented. Price-per-m² is
+    computed only from the two required fields (price, living_area_m2).
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
-    price_text = f"{price:,.0f}" if price is not None else "N/A"
+    price_text = f"€{price:,.0f}" if price is not None else "N/A"
     living_area = listing.get("living_area_m2")
     area_text = f"{living_area} m²" if living_area is not None else "N/A"
     bedrooms = listing.get("bedrooms")
@@ -148,52 +175,32 @@ def _format_listing_message(listing: dict) -> str:
     # Price per m² — computed strictly from the two reliable required fields.
     price_per_m2_text = None
     if price and living_area:
-        price_per_m2_text = f"{price / living_area:,.0f}"
+        price_per_m2_text = f"€{price / living_area:,.0f}/m²"
 
     # --- Header ---
     parts: list[str] = []
     parts.append(f"\U0001f3e0 <b>{address}</b>")
-    header_line = f"\u20ac{price_text} \u00b7 {area_text}"
+    parts.append("")
+
+    parts.append(f"\U0001f4b0 {price_text}")
+
+    area_line = f"\U0001f4d0 {area_text}"
     if price_per_m2_text:
-        header_line += f" \u00b7 \u20ac{price_per_m2_text}/m\u00b2"
-    header_line += f" \u00b7 {bed_text} bedrooms"
-    parts.append(header_line)
-    if property_type or neighborhood:
-        type_and_area = " \u00b7 ".join(
-            part for part in [property_type, neighborhood] if part
-        )
-        parts.append(type_and_area)
+        area_line += f" \u00b7 {price_per_m2_text}"
+    parts.append(area_line)
 
-    # --- Key property facts (only when reliably available) ---
-    fact_bits = []
-    if listing.get("plot_size_m2"):
-        fact_bits.append(f"Plot {listing['plot_size_m2']} m\u00b2")
+    bed_line = f"\U0001f6cf {bed_text} bedrooms"
+    if property_type:
+        bed_line += f" \u00b7 {property_type}"
+    parts.append(bed_line)
+
     if listing.get("energy_label"):
-        fact_bits.append(f"Label {listing['energy_label']}")
-    if listing.get("year_built"):
-        fact_bits.append(f"Built {listing['year_built']}")
-    if fact_bits:
-        parts.append(" \u00b7 ".join(fact_bits))
+        parts.append(f"\u26a1 Energy label {listing['energy_label']}")
 
-    ownership_bits = []
-    ownership_type = listing.get("ownership_type")
-    if ownership_type == "full":
-        ownership_bits.append("Eigendom")
-    elif ownership_type == "erfpacht":
-        canon = listing.get("erfpacht_canon_annual")
-        if canon:
-            # Dutch decimal convention for the annual lease canon.
-            canon_text = f"{canon:g}".replace(".", ",")
-            ownership_bits.append(f"Erfpacht (\u20ac{canon_text}/yr)")
-        else:
-            ownership_bits.append("Erfpacht")
-    status = listing.get("status")
-    if status:
-        ownership_bits.append(str(status))
-    if ownership_bits:
-        parts.append(" \u00b7 ".join(ownership_bits))
+    if neighborhood:
+        parts.append(f"\U0001f4cd {neighborhood}")
 
-    parts.append("")  # blank line before score section
+    parts.append("")
 
     # --- Score section ---
     score = listing.get("score")
@@ -318,6 +325,30 @@ def _format_listing_message(listing: dict) -> str:
 
             except (json.JSONDecodeError, TypeError):
                 pass
+
+    # --- Key property information (only facts that are available) ---
+    key_bits = []
+    if listing.get("plot_size_m2"):
+        key_bits.append(f"Plot {listing['plot_size_m2']} m\u00b2")
+    if listing.get("year_built"):
+        key_bits.append(f"Built {listing['year_built']}")
+    ownership_type = listing.get("ownership_type")
+    if ownership_type == "full":
+        key_bits.append("Eigendom")
+    elif ownership_type == "erfpacht":
+        canon = listing.get("erfpacht_canon_annual")
+        if canon:
+            # Dutch decimal convention for the annual lease canon.
+            canon_text = f"{canon:g}".replace(".", ",")
+            key_bits.append(f"Erfpacht (\u20ac{canon_text}/yr)")
+        else:
+            key_bits.append("Erfpacht")
+    status = listing.get("status")
+    if status:
+        key_bits.append(str(status))
+    if key_bits:
+        parts.append("\u2728 " + " \u00b7 ".join(key_bits))
+        parts.append("")
 
     # --- URL ---
     if url:
@@ -561,24 +592,24 @@ def _post_multipart(
 def _send_images(
     token: str, chat_id: str, image_paths: list, caption: str = "",
 ) -> bool:
-    """Send 1..n downloaded images as one Telegram album for the listing.
+    """Send 1..n downloaded images as one Telegram media message.
 
     * 1 image  -> sendPhoto (multipart upload).
     * 2+ images -> sendMediaGroup (album; caption on the first item only).
 
-    The caption is HTML-escaped plain text (the full rich message was
-    already delivered separately via sendMessage).
+    ``caption`` is already-formatted HTML and is sent verbatim with
+    parse_mode=HTML, so the property text and its photos are delivered
+    as one coherent notification. Callers passing plain text must
+    HTML-escape it first.
     """
     if not image_paths:
         return False
 
-    caption_html = html.escape(caption) if caption else ""
-
     try:
         if len(image_paths) == 1:
             fields = {"chat_id": chat_id}
-            if caption_html:
-                fields["caption"] = caption_html
+            if caption:
+                fields["caption"] = caption
                 fields["parse_mode"] = "HTML"
             files = {
                 "photo": ("photo.jpg", Path(image_paths[0]).read_bytes()),
@@ -590,8 +621,8 @@ def _send_images(
         for i, path in enumerate(image_paths[:10]):  # API max: 10 per album
             attach_name = f"image{i}"
             item = {"type": "photo", "media": f"attach://{attach_name}"}
-            if i == 0 and caption_html:
-                item["caption"] = caption_html
+            if i == 0 and caption:
+                item["caption"] = caption
                 item["parse_mode"] = "HTML"
             media.append(item)
             files[attach_name] = (f"image{i}.jpg", Path(path).read_bytes())
@@ -663,26 +694,38 @@ def send_failure_alert(message: str) -> bool:
 
 
 def send_listing_notification(listing: dict) -> bool:
-    """Send a Telegram notification for a single listing.
+    """Send a single coherent Telegram notification for a listing.
 
-    Delivery flow (one coherent notification per listing):
-      1. send the rich text message via sendMessage — this is the
-         authoritative notification and gates the caller's notified state;
+    Delivery flow (text and photos presented together as ONE coherent
+    notification):
+      1. format the rich HTML message (header metrics, score sections,
+         key facts, Funda URL);
       2. select up to 3 property images (deterministic, from
-         ``listing["image_urls"]`` produced by detail_scraper.py);
-      3. download them into a temporary directory (individual failures
+         ``listing["image_urls"]`` produced by detail_scraper.py) and
+         download them into a temporary directory (individual failures
          are skipped, never fatal);
-      4. upload the successfully downloaded images as one album
-         (sendPhoto / sendMediaGroup) captioned with the address;
+      3. preferred path — deliver text and photos together as one
+         Telegram media message: the full message rides as the HTML
+         caption of the photo (sendPhoto) or photo album
+         (sendMediaGroup). No standalone text message is sent;
+      4. fallbacks — each listing still receives exactly one delivered
+         notification, never duplicates:
+         * no images / all downloads fail  -> text-only sendMessage;
+         * album send failed               -> text-only sendMessage
+           (the failed album produced no delivered message);
+         * message too long for a Telegram media caption (> 1024 chars)
+           -> the text is sent via sendMessage and the photos follow as
+           an album captioned with the address (text-first
+           presentation, kept so no information is dropped);
       5. always clean up the temporary files.
 
     Failure semantics:
-    * text message fails        -> return False; the caller leaves the
-      listing unnotified so it is retried on a later run.
-    * all image downloads fail  -> the text-only notification stands;
-      return True (no retry, no duplicate text message).
-    * album upload fails after a delivered text message -> logged as a
-      warning; return True. Retrying would duplicate the text message.
+    * the authoritative notification (album-with-caption, or the text
+      fallback) fails -> return False; the caller leaves the listing
+      unnotified so it is retried on a later run;
+    * photos are best-effort: download failures are skipped, and after a
+      failed album upload no image retry is attempted (no duplicate
+      image messages).
 
     Parameters
     ----------
@@ -694,26 +737,28 @@ def send_listing_notification(listing: dict) -> bool:
     Returns
     -------
     bool
-        True if the notification was delivered (with or without photos),
-        False only when the text message itself could not be sent.
+        True if exactly one coherent notification was delivered
+        (with or without photos), False only when no notification could
+        be delivered at all.
     """
     token = _get_token()
     chat_id = _get_chat_id()
     message = _format_listing_message(listing)
 
-    logger.info("Sending notification for listing %s (%s)", listing.get("listing_id"), listing.get("address"))
-    if not _send_message(token, chat_id, message):
-        return False
+    logger.info(
+        "Sending notification for listing %s (%s)",
+        listing.get("listing_id"), listing.get("address"),
+    )
 
     # --- Best-effort property photos (same listing identity) ---
     selected_urls = _select_images(listing.get("image_urls"))
     if not selected_urls:
         logger.info(
             "No property images available for listing %s; "
-            "text-only notification delivered.",
+            "text-only notification.",
             listing.get("listing_id"),
         )
-        return True
+        return _send_message(token, chat_id, message)
 
     tmp_dir = tempfile.mkdtemp(prefix="funda-images-")
     try:
@@ -731,14 +776,33 @@ def send_listing_notification(listing: dict) -> bool:
         if not downloaded_paths:
             logger.warning(
                 "All image downloads failed for listing %s; "
-                "text-only notification already delivered.",
+                "text-only notification.",
                 listing.get("listing_id"),
             )
-            return True
+            return _send_message(token, chat_id, message)
 
+        # --- Preferred delivery: photos + full text as one media message ---
+        if _fits_telegram_caption(message):
+            if _send_images(token, chat_id, downloaded_paths, caption=message):
+                logger.info(
+                    "Sent notification with %d photo(s) for listing %s.",
+                    len(downloaded_paths), listing.get("listing_id"),
+                )
+                return True
+            logger.warning(
+                "Photo album upload failed for listing %s; falling back "
+                "to a text-only notification (no image retry to avoid "
+                "duplicates).",
+                listing.get("listing_id"),
+            )
+            return _send_message(token, chat_id, message)
+
+        # --- Caption too long: text first, photos as an album after it ---
+        if not _send_message(token, chat_id, message):
+            return False
         if _send_images(
             token, chat_id, downloaded_paths,
-            caption=listing.get("address") or "",
+            caption=html.escape(listing.get("address") or ""),
         ):
             logger.info(
                 "Sent %d photo(s) for listing %s.",
