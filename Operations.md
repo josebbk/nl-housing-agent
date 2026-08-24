@@ -358,6 +358,20 @@ The database is runtime data and should not be committed to Git.
 
 The database stores listings and allows the scraper to distinguish previously seen listings from newly discovered listings.
 
+### Automatic schema migration
+
+On every startup (`init_db()` in `src/storage.py`) the application
+checks the live `listings` table and adds any missing columns with
+idempotent, non-destructive `ALTER TABLE ADD COLUMN` statements. No
+manual migration step is required after deploying a new feature that
+extends the schema — for example, legacy databases created before the
+rich-photo feature automatically gained `last_seen_at` and
+`image_urls` (JSON TEXT) on their first run afterwards. Existing rows,
+notified flags, scores, and all previously stored fields are never
+modified by the migration; new columns start as NULL and fill in as
+listings are re-fetched. To verify a database's schema:
+`sqlite3 data/funda.db "PRAGMA table_info(listings);"`.
+
 Important operational behavior:
 
 ```text
