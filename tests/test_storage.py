@@ -90,7 +90,10 @@ class StorageContractTestCase(unittest.TestCase):
             "garage_type", "parking_type", "insulation_raw", "insulation_score",
             "heating_type", "boiler_year",
             "bathrooms", "neighborhood_avg_price_m2",
+            # Rich-photo feature: JSON-encoded property photo URLs
+            "image_urls",
             "score", "score_breakdown", "score_confidence", "detail_fetched_at",
+            "last_seen_at",
         }
         self.assertEqual(expected, cols)
 

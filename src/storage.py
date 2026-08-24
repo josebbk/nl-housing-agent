@@ -60,10 +60,11 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                         parking_type TEXT,
                         insulation_raw TEXT,
                         insulation_score REAL,
-heating_type TEXT,
-                    boiler_year INTEGER,
-                    bathrooms INTEGER,
+                        heating_type TEXT,
+                        boiler_year INTEGER,
+                        bathrooms INTEGER,
                         neighborhood_avg_price_m2 REAL,
+                        image_urls TEXT,
                         score INTEGER,
                         score_breakdown TEXT,
                         score_confidence TEXT,
@@ -73,6 +74,11 @@ heating_type TEXT,
                 """)
 
                 # Migrate existing tables — add Phase 2 detail/scoring columns
+                # and any later additions (e.g. image_urls). Adding an entry
+                # here is the project's schema-migration mechanism: idempotent
+                # ALTER TABLE ADD COLUMN, safe on legacy databases, never
+                # destructive. listings_archive must always mirror the
+                # listings column set because archival uses SELECT *.
                 phase2_columns = [
                     ("ownership_type", "TEXT"),
                     ("erfpacht_canon_annual", "REAL"),
@@ -90,6 +96,7 @@ heating_type TEXT,
                     ("boiler_year", "INTEGER"),
                     ("bathrooms", "INTEGER"),
                     ("neighborhood_avg_price_m2", "REAL"),
+                    ("image_urls", "TEXT"),
                     ("score", "INTEGER"),
                     ("score_breakdown", "TEXT"),
                     ("score_confidence", "TEXT"),
@@ -146,8 +153,9 @@ heating_type TEXT,
                         insulation_score REAL,
                         heating_type TEXT,
                         boiler_year INTEGER,
-                        bathrooms INTEGER,
+                    bathrooms INTEGER,
                         neighborhood_avg_price_m2 REAL,
+                        image_urls TEXT,
                         score INTEGER,
                         score_breakdown TEXT,
                         score_confidence TEXT,
@@ -160,6 +168,48 @@ heating_type TEXT,
     except sqlite3.Error as e:
         logger.exception("Failed to initialize database at %s: %s", db_path, e)
         raise
+
+def _encode_image_urls(value) -> str | None:
+    """Encode an image_urls value for storage as a JSON TEXT column.
+
+    Accepts a list of URL strings (encoded to a JSON array), None/empty
+    (stored as NULL), or an already-encoded JSON string (validated and
+    re-normalised). Anything else is stored as NULL — never guessed.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(parsed, list):
+            urls = [u for u in parsed if isinstance(u, str) and u.strip()]
+            return json.dumps(urls) if urls else None
+        return None
+    if isinstance(value, (list, tuple)):
+        urls = [u for u in value if isinstance(u, str) and u.strip()]
+        return json.dumps(urls) if urls else None
+    return None
+
+
+def _decode_image_urls(value) -> list[str] | None:
+    """Decode the stored JSON TEXT back into a list of URL strings.
+
+    Returns None for NULL/unparseable values so callers can distinguish
+    "no images stored" from an empty list.
+    """
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(parsed, list):
+        urls = [u for u in parsed if isinstance(u, str)]
+        return urls or None
+    return None
+
 
 def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) -> str:
     """
@@ -213,10 +263,15 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
         "heating_type", "boiler_year",
         "bathrooms", "neighborhood_avg_price_m2",
         "score", "score_breakdown", "score_confidence", "detail_fetched_at",
+        "image_urls",
     ]
     for field in phase2_fields:
         if field not in data:
             data[field] = None
+
+    # image_urls arrives as a Python list (detail scraper output); persist
+    # it as JSON TEXT. NULL/empty stays NULL.
+    data["image_urls"] = _encode_image_urls(data.get("image_urls"))
 
     try:
         with closing(sqlite3.connect(db_path)) as conn:
@@ -246,6 +301,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                             garage_type, parking_type, insulation_raw, insulation_score,
                             heating_type, boiler_year,
                             bathrooms, neighborhood_avg_price_m2,
+                            image_urls,
                             score, score_breakdown, score_confidence, detail_fetched_at,
                             last_seen_at
                         ) VALUES (
@@ -258,6 +314,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                             :garage_type, :parking_type, :insulation_raw, :insulation_score,
                             :heating_type, :boiler_year,
                             :bathrooms, :neighborhood_avg_price_m2,
+                            :image_urls,
                             :score, :score_breakdown, :score_confidence, :detail_fetched_at,
                             :last_seen_at
                         );
@@ -313,7 +370,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                     "building_bound_outdoor_m2", "garage_type",
                     "parking_type", "insulation_raw", "insulation_score",
                     "heating_type", "boiler_year", "bathrooms",
-                    "neighborhood_avg_price_m2", "score",
+                    "neighborhood_avg_price_m2", "image_urls", "score",
                     "score_breakdown", "score_confidence",
                     "detail_fetched_at",
                 ]
@@ -340,6 +397,7 @@ def insert_listing(listing_data: dict, db_path: Path | str = DEFAULT_DB_PATH) ->
                     "garage_type", "parking_type", "insulation_raw", "insulation_score",
                     "heating_type", "boiler_year",
                     "bathrooms", "neighborhood_avg_price_m2",
+                    "image_urls",
                     "score", "score_breakdown", "score_confidence", "detail_fetched_at",
                     "last_seen_at",
                 ]
@@ -605,7 +663,14 @@ def fetch_unnotified_matching_listings(
             cursor = conn.cursor()
             cursor.execute(query, tuple(params))
             rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            listings = [dict(row) for row in rows]
+            # Decode the stored image_urls JSON TEXT back into the list
+            # representation consumers (notifier) expect. NULL stays None.
+            for listing in listings:
+                listing["image_urls"] = _decode_image_urls(
+                    listing.get("image_urls")
+                )
+            return listings
     except sqlite3.Error as e:
         logger.exception("Failed to fetch unnotified matching listings at %s: %s", db_path, e)
         raise
