@@ -817,9 +817,10 @@ A test notification should confirm:
 * The message contains the expected listing information.
 * The Funda URL is present.
 * No secret is included in the message.
-* When the listing carries `image_urls` (detail-page scrape), up to 3
-  photos of that listing arrive as one album right after the text
-  message; with no `image_urls`, a text-only notification is delivered.
+* When the listing carries `image_urls` (detail-page scrape), the
+  notification text and up to 3 photos of that listing arrive together
+  as ONE media message (the text rides as the photo/album caption);
+  with no `image_urls`, a text-only notification is delivered.
 
 Real notification testing should not be mixed into every scraper debugging run.
 
@@ -966,17 +967,21 @@ Action:
 
 ### Image delivery failure
 
-Property photos are best-effort additions to an already-delivered text
-notification (see Architecture.md → "Property images in notifications"):
+Property photos are best-effort and are delivered together with the
+notification text as one media message (see Architecture.md →
+"Property images in notifications"):
 
 * a single image download failure is logged as a warning and that image
   is skipped; the remaining photos still ship;
-* when all downloads fail, the text-only notification stands and the
-  listing IS marked notified — retrying would duplicate the delivered
-  message;
-* when the album upload fails after the text was delivered, this is
-  logged as a warning; the listing stays marked notified (no duplicate
-  notifications);
+* when all downloads fail, the notification degrades to a text-only
+  message which stands — the listing IS marked notified; retrying would
+  duplicate the delivered message;
+* when the album upload fails, the notification falls back to a
+  text-only message; this is logged as a warning; no image retry is
+  attempted (no duplicate image messages);
+* when the text is too long for a Telegram media caption, the full text
+  is delivered first and the photos follow as an album captioned with
+  the address — no information is dropped;
 * downloaded images live only in a temporary directory
   (`funda-images-*` under the system temp dir) which is always removed
   after sending; images are never stored permanently;

@@ -196,11 +196,13 @@ minimum and includes:
 * ownership type (with annual lease canon when applicable) and listing
   status
 * the match score with its breakdown (Phase 2 format)
-* **up to 3 property photos of the same listing**, sent as one photo
-  album immediately after the text message. Photos are best-effort: if
-  fewer than 3 are available or some fail to download, the valid ones are
-  still sent; the text notification is never withheld because images are
-  missing.
+* **up to 3 property photos of the same listing**, delivered together
+  with the text as one coherent Telegram media message: the
+  notification text rides as the caption of the photo (or photo
+  album). Photos are best-effort: if fewer than 3 are available or
+  some fail to download, the valid ones are still sent; the text
+  notification is never withheld because images are missing (it
+  degrades to a text-only message).
 
 Fields that a listing does not expose are omitted from the message —
 values are never invented or shown as placeholders.
