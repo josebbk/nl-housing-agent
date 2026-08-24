@@ -252,6 +252,23 @@ class TestImageSelection(unittest.TestCase):
         self.assertEqual(_select_images([]), [])
         self.assertEqual(_select_images(None), [])
 
+    def test_json_string_representation_from_storage(self):
+        """Persisted JSON TEXT (raw DB row) is accepted and decoded."""
+        import json as _json
+        raw = _json.dumps([
+            "https://cloud.funda.nl/valentina_media/a/1.jpg?options=width=1440",
+            "https://cloud.funda.nl/valentina_media/a/2.jpg?options=width=1440",
+            "https://cloud.funda.nl/valentina_media/a/3.jpg?options=width=1440",
+            "https://cloud.funda.nl/valentina_media/a/4.jpg?options=width=1440",
+        ])
+        picked = _select_images(raw)
+        self.assertEqual(len(picked), 3)
+        self.assertTrue(picked[0].endswith("1.jpg?options=width=1440"))
+
+    def test_unparseable_string_yields_empty_selection(self):
+        self.assertEqual(_select_images("garbage-not-json"), [])
+        self.assertEqual(_select_images('{"not": "a-list"}'), [])
+
     def test_duplicate_urls_removed(self):
         dupes = [self.URLS[0], self.URLS[0], self.URLS[1]]
         picked = _select_images(dupes)

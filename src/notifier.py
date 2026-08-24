@@ -401,7 +401,16 @@ def _select_images(
     skipping entries that are not http(s) URLs and exact duplicates,
     stopping at ``max_images``. No randomness; the same input always
     yields the same selection.
+
+    Accepts either the decoded list form or the JSON TEXT representation
+    as stored in the listings table (e.g. when callers read raw DB rows).
+    Unparseable input yields an empty selection.
     """
+    if isinstance(image_urls, str):
+        try:
+            image_urls = json.loads(image_urls)
+        except (ValueError, TypeError):
+            return []
     selected: list[str] = []
     seen: set[str] = set()
     for url in image_urls or []:
