@@ -511,73 +511,70 @@ The confidence flag shows `"⚠ partial data ({missing criteria})"` when
 data is incomplete, and `Score: unavailable` when no scoring data is
 available.
 
-#### Current format (Task 6 — coherent media-message presentation)
+#### Current format (Task 7 — metric-only presentation)
 
-The notification message was restructured into an emoji-led, scannable
-layout and is delivered together with the property photos as one
-Telegram media message (see "Property images in notifications"). The
-format is:
+The notification message is a clean, metric-only list: every line
+follows `EMOJI + English metric name + ":" + value`, no Dutch property
+terminology is displayed, and the text is delivered together with the
+property photos as one Telegram media message (see "Property images in
+notifications"). The format is:
 
 ```
 🏠 {address}
 
-💰 €{price}
-📐 {living_area} m² · €{price_per_m2}/m²
-🛏 {bedrooms} bedrooms · {property_type}
-⚡ Energy label {energy_label}
-📍 {neighborhood}
+💰 Price: €{price}
+📐 Size: {living_area} m² · €{price_per_m2}/m²
+🛏 Bedrooms: {bedrooms}
+⚡ Energy label: {energy_label}
+📍 Location: {neighborhood}
+🌳 Plot: {plot_size_m2} m²
+🏗 Year built: {year_built}
 
-⭐ {score}/100
-⚠️ Adjusted · {missing criteria} data unavailable
+⭐ Score: {score}/100
+⚠️ Adjusted: {missing criteria} data unavailable
 
-🟢 Best
-• {Criterion} — {earned}/{possible}
-• {Criterion} — {earned}/{possible}
-• {Criterion} — {earned}/{possible}
-
-🔴 Weakest
-• {Criterion} — {earned}/{possible}
-• {Criterion} — {earned}/{possible}
-• {Criterion} — {earned}/{possible}
-
-📊 Full score breakdown
-{Criterion} {earned}/{possible} · {Criterion} {earned}/{possible}
-{Criterion} {earned}/{possible} · {Criterion} {earned}/{possible}
-...
-
-{Criterion} N/A
-
-✨ {plot · year built · ownership · status}
+🟢 Best: {Criterion} {earned}/{possible} · ...
+🔴 Weakest: {Criterion} {earned}/{possible} · ...
+📊 Breakdown: {Criterion} {earned}/{possible} · ... ({N/A} when missing)
 
 🔗 {url}
 ```
 
-> **Superseded (Task 6):** the previous "Task 3" layout put address,
-> price, area, bedrooms, property type and neighborhood on two `·`-joined
-> header lines and a separate facts line. That layout is replaced by the
-> emoji-structured lines above (💰 price, 📐 area + €/m², 🛏 bedrooms +
-> property type, ⚡ energy label, 📍 neighborhood, ✨ key facts). Values
-> and score semantics are unchanged; only their visual arrangement
-> changed.
+> **Superseded (Task 6):** the previous "Task 6" layout used
+> metric lines without names/colons (e.g. `💰 €{price}`,
+> `🛏 {bedrooms} bedrooms · {property_type}`), a `✨` key-facts line
+> carrying plot/year/ownership/status, and bullet-list Best/Weakest
+> sections. Task 7 replaced it with the metric-only format above and
+> dropped the Dutch terminology (property type, listing status,
+> ownership wording) from the message. Values and score semantics are
+> unchanged; only their visual arrangement changed.
 
 **Rules:**
 
-* **Header** — address on line 1; one emoji-led line per metric group
-  (💰 price, 📐 living area + price/m², 🛏 bedrooms + property type,
-  ⚡ energy label, 📍 neighborhood). Lines whose only content would be
-  missing fields are omitted entirely.
-* **Score** — `⭐ {score}/100` with bold score value.
+* **Header** — the address on line 1, kept exactly as provided by the
+  listing; no prose around it.
+* **Metric lines** — `💰 Price`, `📐 Size` (living area + price/m²),
+  `🛏 Bedrooms`, `⚡ Energy label`, `📍 Location` (neighborhood,
+  capitalized as presentation), `🌳 Plot`, `🏗 Year built`. Lines
+  whose only content would be missing fields are omitted entirely.
+* **No Dutch terminology** — property type (e.g. `Eengezinswoning`),
+  listing status (e.g. `Beschikbaar`) and ownership wording
+  (`Eigendom`/`Erfpacht`) are not displayed and are not replaced with
+  invented English translations.
+* **Score** — `⭐ Score: {score}/100` with bold score value; when the
+  score is unavailable the existing behavior is preserved as
+  `⭐ Score: unavailable`.
 * **Adjusted line** — shown only when `score_confidence == "partial"`,
   listing the display names of criteria with `matched: false`.
   Omitted entirely when confidence is `"full"`.
-* **No-data** — when `score_confidence == "no_data"` or `score` is `None`,
-  shows `Score: unavailable` (existing convention).
 * **Best / Weakest** — top 3 and bottom 3 matched criteria sorted by
-  `points_earned` (absolute contribution to total score).
-  If ≤ 3 matched criteria, only Best is shown.
-  If 4–6 matched criteria, Best (top 3) and Weakest (bottom 3) may overlap.
-* **Full score breakdown** — every criterion from `config/preferences.json`
-  weights listed two per line, with `N/A` for unmatched criteria.
+  `points_earned` (absolute contribution to total score), rendered as
+  single `🟢 Best:` / `🔴 Weakest:` lines. If ≤ 3 matched criteria,
+  only Best is shown. If 4–6 matched criteria, Best (top 3) and
+  Weakest (bottom 3) may overlap.
+* **Full score breakdown** — `📊 Breakdown:` line with every criterion
+  from `config/preferences.json` weights, with `N/A` for unmatched
+  criteria.
 * **Criterion display names** — raw keys (e.g. `neighborhood_value`) are
   mapped to human-readable labels (e.g. "Neighborhood") in
   `notifier.py::_CRITERION_LABELS`. This mapping is presentation-only.
@@ -591,29 +588,27 @@ placeholder values:
 ```
 🏠 {address}
 
-💰 €{price}
-📐 {living_area} m² · €{price_per_m2}/m²
-🛏 {bedrooms} bedrooms · {property_type}
-⚡ Energy label {energy_label}
-📍 {neighborhood}
+💰 Price: €{price}
+📐 Size: {living_area} m² · €{price_per_m2}/m²
+🛏 Bedrooms: {bedrooms}
+⚡ Energy label: {energy_label}
+📍 Location: {neighborhood}
+🌳 Plot: {plot_size_m2} m²
+🏗 Year built: {year_built}
 
-⭐ {score}/100
+⭐ Score: {score}/100
 ...
-
-✨ Plot {plot_size_m2} m² · Built {year_built} · {ownership} · {status}
 ```
 
 * **Price per m²** — computed strictly from the two required fields
   (`price / living_area_m2`); rendered only when both are present.
-* **Energy label** — its own `⚡ Energy label …` line, only when
+* **Energy label** — its own `⚡ Energy label: …` line, only when
   `energy_label` is non-null.
-* **Key-facts line (`✨`)** — `Plot … m²`, `Built …`, ownership and
-  status segments appear only when the respective field is non-null
-  (`plot_size_m2`, `year_built`, `ownership_type`, `status`).
-* **Ownership** — `Eigendom` for full ownership,
-  `Erfpacht (€408,85/yr)` for leasehold with an annual canon (Dutch
-  decimal convention), `Erfpacht` without canon when unknown. The listing
-  status (e.g. `Beschikbaar`) is appended when available.
+* **Plot / Year built** — `🌳 Plot: … m²` and `🏗 Year built: …` lines
+  appear only when the respective field is non-null (`plot_size_m2`,
+  `year_built`).
+* **Property type, status and ownership** — not displayed (Dutch
+  terminology, see the metric-only format rules above).
 * The score sections and URL line are unchanged.
 
 ### Property images in notifications

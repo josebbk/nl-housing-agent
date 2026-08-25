@@ -190,11 +190,8 @@ At minimum, the notification should contain:
 The delivered notification (MVP extension, implemented) goes beyond this
 minimum and includes:
 
-* bedrooms, neighborhood, property type
-* price per m²
+* bedrooms, neighborhood, price per m²
 * plot size, energy label, construction year
-* ownership type (with annual lease canon when applicable) and listing
-  status
 * the match score with its breakdown (Phase 2 format)
 * **up to 3 property photos of the same listing**, delivered together
   with the text as one coherent Telegram media message: the
@@ -203,6 +200,14 @@ minimum and includes:
   some fail to download, the valid ones are still sent; the text
   notification is never withheld because images are missing (it
   degrades to a text-only message).
+
+The notification text is a clean, metric-only list: every line follows
+`EMOJI + English metric name + ":" + value` (e.g. `💰 Price: €599,000`,
+`📐 Size: 133 m² · €4,504/m²`, `⭐ Score: unavailable`). The address is
+kept exactly as provided by the listing. No Dutch property terminology
+is displayed: property type (e.g. `Eengezinswoning`), listing status
+(e.g. `Beschikbaar`) and ownership wording (`Eigendom`/`Erfpacht`) are
+omitted and are not replaced with invented English translations.
 
 Fields that a listing does not expose are omitted from the message —
 values are never invented or shown as placeholders.
