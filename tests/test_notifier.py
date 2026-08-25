@@ -144,52 +144,67 @@ def _extract_field(body: bytes, name: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 class TestMessageFormatting(unittest.TestCase):
-    def test_header_uses_emoji_structure(self):
+    def test_header_uses_metric_name_colon_value_structure(self):
         msg = _format_listing_message(make_listing())
         self.assertIn("🏠 <b>Lambert Rimastraat 15</b>", msg)
-        self.assertIn("💰 €599,000", msg)
-        self.assertIn("📐 133 m² · €4,504/m²", msg)
-        self.assertIn("🛏 3 bedrooms · huis", msg)
-        self.assertIn("⚡ Energy label C", msg)
-        self.assertIn("📍 amsterdam", msg)
+        self.assertIn("💰 Price: €599,000", msg)
+        self.assertIn("📐 Size: 133 m² · €4,504/m²", msg)
+        self.assertIn("🛏 Bedrooms: 3", msg)
+        self.assertIn("⚡ Energy label: C", msg)
+        self.assertIn("📍 Location: Amsterdam", msg)
+        self.assertIn("🌳 Plot: 122 m²", msg)
+        self.assertIn("🏗 Year built: 1996", msg)
+
+    def test_every_metric_line_has_emoji_name_and_colon(self):
+        msg = _format_listing_message(make_listing())
+        metric_lines = [
+            line for line in msg.splitlines()
+            if line and not line.startswith("🔗") and "🏠" not in line
+        ]
+        self.assertTrue(metric_lines)
+        for line in metric_lines:
+            self.assertRegex(line, r"^\S+ [A-Za-z ]+: ", line)
+
+    def test_no_dutch_property_terminology(self):
+        msg = _format_listing_message(make_listing(
+            property_type="Eengezinswoning, tussenwoning",
+            status="Beschikbaar",
+            ownership_type="erfpacht",
+            erfpacht_canon_annual=408.85))
+        for dutch in ("Eengezinswoning", "tussenwoning", "Erfpacht",
+                      "Beschikbaar", "Eigendom"):
+            self.assertNotIn(dutch, msg)
+
+    def test_address_kept_exactly_as_provided(self):
+        msg = _format_listing_message(make_listing(
+            address="Van Woustraat 245-III, Amsterdam"))
+        self.assertIn("🏠 <b>Van Woustraat 245-III, Amsterdam</b>", msg)
 
     def test_price_per_m2_present_and_omitted(self):
         msg = _format_listing_message(make_listing())
         self.assertIn("€4,504/m²", msg)
         msg = _format_listing_message(make_listing(living_area_m2=None))
         self.assertNotIn("/m²", msg)
-        self.assertIn("📐 N/A", msg)
+        self.assertIn("📐 Size: N/A", msg)
         msg = _format_listing_message(make_listing(price=None))
         self.assertNotIn("/m²", msg)
-        self.assertIn("💰 N/A", msg)
+        self.assertIn("💰 Price: N/A", msg)
 
     def test_optional_header_lines_omitted(self):
         msg = _format_listing_message(make_listing(
-            energy_label=None, neighborhood=None))
+            energy_label=None, neighborhood=None, plot_size_m2=None,
+            year_built=None))
         self.assertNotIn("⚡", msg)
         self.assertNotIn("📍", msg)
-
-    def test_key_facts_section(self):
-        msg = _format_listing_message(make_listing())
-        self.assertIn("✨ Plot 122 m² · Built 1996 · Eigendom · Beschikbaar", msg)
-
-    def test_key_facts_erfpacht_canon_dutch_decimal(self):
-        msg = _format_listing_message(make_listing(
-            ownership_type="erfpacht", erfpacht_canon_annual=408.85))
-        self.assertIn("✨ Plot 122 m² · Built 1996 · Erfpacht (€408,85/yr) · Beschikbaar", msg)
-
-    def test_key_facts_section_omitted_when_empty(self):
-        msg = _format_listing_message(make_listing(
-            plot_size_m2=None, year_built=None, ownership_type=None,
-            status=None))
-        self.assertNotIn("✨", msg)
+        self.assertNotIn("🌳", msg)
+        self.assertNotIn("🏗", msg)
 
     def test_score_section_values_unchanged(self):
         msg = _format_listing_message(make_listing())
-        self.assertIn("⭐ <b>82/100</b>", msg)
-        self.assertIn("🟢 Best", msg)
-        self.assertIn("🔴 Weakest", msg)
-        self.assertIn("📊 Full score breakdown", msg)
+        self.assertIn("⭐ Score: <b>82/100</b>", msg)
+        self.assertIn("🟢 Best: Neighborhood 18/21 · Ownership 17/17 · Energy 14/14", msg)
+        self.assertIn("🔴 Weakest: Balcony 0/3 · Plot size 3/4 · Garden 3/4", msg)
+        self.assertIn("📊 Breakdown:", msg)
         self.assertIn("Neighborhood 18/21", msg)
         self.assertIn("Ownership 17/17", msg)
         self.assertNotIn("⚠️ Adjusted", msg)  # confidence == full
@@ -198,17 +213,16 @@ class TestMessageFormatting(unittest.TestCase):
         msg = _format_listing_message(make_listing(
             score=78, score_confidence="partial",
             score_breakdown=json.dumps(PARTIAL_BREAKDOWN)))
-        self.assertIn("⭐ <b>78/100</b>", msg)
-        self.assertIn("⚠️ Adjusted · Neighborhood, Parking data unavailable", msg)
+        self.assertIn("⭐ Score: <b>78/100</b>", msg)
+        self.assertIn("⚠️ Adjusted: Neighborhood, Parking data unavailable", msg)
         self.assertIn("Neighborhood N/A", msg)
         self.assertIn("Parking N/A", msg)
 
-    def test_no_data_shows_unavailable_without_score_emoji(self):
+    def test_no_data_shows_unavailable_score(self):
         msg = _format_listing_message(make_listing(
             score=None, score_confidence="no_data",
             score_breakdown=json.dumps([])))
-        self.assertIn("Score: unavailable", msg)
-        self.assertNotIn("⭐", msg)
+        self.assertIn("⭐ Score: unavailable", msg)
         self.assertNotIn("⚠️", msg)
         self.assertNotIn("🟢", msg)
         self.assertNotIn("🔴", msg)
@@ -279,7 +293,7 @@ class TestCoherentDelivery(unittest.TestCase):
         self.assertEqual(len(media), 3)
         caption = media[0]["caption"]
         self.assertIn("🏠 <b>Lambert Rimastraat 15</b>", caption)
-        self.assertIn("⭐ <b>82/100</b>", caption)
+        self.assertIn("⭐ Score: <b>82/100</b>", caption)
         self.assertIn("View on Funda", caption)
         self.assertEqual(media[0]["parse_mode"], "HTML")
 
