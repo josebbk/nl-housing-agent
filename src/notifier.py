@@ -136,30 +136,34 @@ def _format_listing_message(listing: dict) -> str:
 
     Notification layout (presentation-only; every value comes from the
     listing dict exactly as produced by scraper.py / detail_scraper.py /
-    scoring.py):
+    scoring.py). Every metric line follows the structure
+    ``EMOJI + English metric name + ":" + value`` and no Dutch property
+    terminology is displayed:
 
         🏠 <b>{address}</b>
 
-        💰 €{price}
-        📐 {living area} m² · €{price/m²}/m²
-        🛏 {bedrooms} bedrooms · {property type}
-        ⚡ Energy label {label}
-        📍 {neighborhood}
+        💰 Price: €{price}
+        📐 Size: {living_area} m² · €{price/m²}/m²
+        🛏 Bedrooms: {bedrooms}
+        ⚡ Energy label: {label}
+        📍 Location: {neighborhood}
+        🌳 Plot: {plot_size_m2} m²
+        🏗 Year built: {year_built}
 
-        ⭐ <b>{score}/100</b>
-        ⚠️ Adjusted · {missing criteria} data unavailable   (partial only)
-        🟢 Best / 🔴 Weakest / 📊 Full score breakdown      (score section)
-
-        ✨ {plot · year built · ownership · status}         (available facts only)
+        ⭐ Score: <b>{score}/100</b>
+        ⚠️ Adjusted: {missing criteria} data unavailable   (partial only)
+        🟢 Best: {criterion} {earned}/{possible} · ...
+        🔴 Weakest: {criterion} {earned}/{possible} · ...
+        📊 Breakdown: {criterion} {earned}/{possible} · ... ({N/A} when missing)
 
         🔗 <a href="{url}">View on Funda</a>
 
-    All values are dynamically populated from the listing dict's existing
-    ``score``, ``score_breakdown`` (JSON list of {criterion,
-    points_earned, points_possible, matched}), and ``score_confidence``
-    already produced by ``scoring.py``. Metrics that are missing are
-    omitted from the optional lines — never invented. Price-per-m² is
-    computed only from the two required fields (price, living_area_m2).
+    The address is kept exactly as provided by the listing. Metrics that
+    are missing are omitted from the optional lines — never invented.
+    Price-per-m² is computed only from the two required fields (price,
+    living_area_m2). Property type, listing status and ownership
+    (Dutch terminology such as "Eengezinswoning", "Beschikbaar",
+    "Erfpacht") are not displayed.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -168,7 +172,6 @@ def _format_listing_message(listing: dict) -> str:
     area_text = f"{living_area} m²" if living_area is not None else "N/A"
     bedrooms = listing.get("bedrooms")
     bed_text = str(bedrooms) if bedrooms is not None else "N/A"
-    property_type = listing.get("property_type", "") or ""
     neighborhood = listing.get("neighborhood", "") or ""
     url = listing.get("url", "")
 
@@ -177,28 +180,31 @@ def _format_listing_message(listing: dict) -> str:
     if price and living_area:
         price_per_m2_text = f"€{price / living_area:,.0f}/m²"
 
-    # --- Header ---
+    # --- Header and metric lines ---
     parts: list[str] = []
     parts.append(f"\U0001f3e0 <b>{address}</b>")
     parts.append("")
 
-    parts.append(f"\U0001f4b0 {price_text}")
+    parts.append(f"\U0001f4b0 Price: {price_text}")
 
-    area_line = f"\U0001f4d0 {area_text}"
+    size_line = f"\U0001f4d0 Size: {area_text}"
     if price_per_m2_text:
-        area_line += f" \u00b7 {price_per_m2_text}"
-    parts.append(area_line)
+        size_line += f" \u00b7 {price_per_m2_text}"
+    parts.append(size_line)
 
-    bed_line = f"\U0001f6cf {bed_text} bedrooms"
-    if property_type:
-        bed_line += f" \u00b7 {property_type}"
-    parts.append(bed_line)
+    parts.append(f"\U0001f6cf Bedrooms: {bed_text}")
 
     if listing.get("energy_label"):
-        parts.append(f"\u26a1 Energy label {listing['energy_label']}")
+        parts.append(f"\u26a1 Energy label: {listing['energy_label']}")
 
     if neighborhood:
-        parts.append(f"\U0001f4cd {neighborhood}")
+        parts.append(f"\U0001f4cd Location: {neighborhood.title()}")
+
+    if listing.get("plot_size_m2"):
+        parts.append(f"\U0001f333 Plot: {listing['plot_size_m2']} m\u00b2")
+
+    if listing.get("year_built"):
+        parts.append(f"\U0001f3d7 Year built: {listing['year_built']}")
 
     parts.append("")
 
@@ -208,9 +214,9 @@ def _format_listing_message(listing: dict) -> str:
     score_breakdown = listing.get("score_breakdown")
 
     if score is None or confidence == "no_data":
-        parts.append("Score: unavailable")
+        parts.append("\u2b50 Score: unavailable")
     else:
-        parts.append(f"\u2b50 <b>{score}/100</b>")
+        parts.append(f"\u2b50 Score: <b>{score}/100</b>")
 
         # Adjusted line — only when confidence is "partial"
         if confidence == "partial" and score_breakdown:
@@ -223,7 +229,7 @@ def _format_listing_message(listing: dict) -> str:
                 ]
                 if missing:
                     parts.append(
-                        f"\u26a0\ufe0f Adjusted \u00b7 "
+                        f"\u26a0\ufe0f Adjusted: "
                         f"{', '.join(missing)} data unavailable"
                     )
             except (json.JSONDecodeError, TypeError):
@@ -238,9 +244,6 @@ def _format_listing_message(listing: dict) -> str:
                 matched = [
                     item for item in breakdown_data if item.get("matched", True)
                 ]
-                unmatched = [
-                    item for item in breakdown_data if not item.get("matched", True)
-                ]
 
                 if matched:
                     # Sort descending by points_earned for best, ascending for weakest
@@ -254,44 +257,34 @@ def _format_listing_message(listing: dict) -> str:
                     best = sorted_desc[:3]
                     weakest = sorted_asc[:3]
 
+                    def _fmt_criterion(item: dict) -> str:
+                        label = _criterion_label(item.get("criterion", "?"))
+                        earned = item.get("points_earned", 0)
+                        possible = item.get("points_possible", 0)
+                        return f"{label} {earned}/{possible}"
+
                     # If ≤6 criteria matched, best and weakest may overlap.
                     # With ≤3 matched criteria, show only Best.
                     # With 4-6 matched criteria, show Best (top 3) and Weakest
                     # (bottom 3), allowing overlap at the boundary.
-                    if len(matched) <= 3:
-                        parts.append("\U0001f7e2 Best")
-                        for item in best:
-                            label = _criterion_label(item.get("criterion", "?"))
-                            earned = item.get("points_earned", 0)
-                            possible = item.get("points_possible", 0)
-                            parts.append(
-                                f"\u2022 {label} \u2014 {earned}/{possible}"
+                    parts.append(
+                        "\U0001f7e2 Best: "
+                        + " \u00b7 ".join(_fmt_criterion(item) for item in best)
+                    )
+                    if len(matched) > 3:
+                        parts.append(
+                            "\U0001f534 Weakest: "
+                            + " \u00b7 ".join(
+                                _fmt_criterion(item) for item in weakest
                             )
-                    else:
-                        parts.append("\U0001f7e2 Best")
-                        for item in best:
-                            label = _criterion_label(item.get("criterion", "?"))
-                            earned = item.get("points_earned", 0)
-                            possible = item.get("points_possible", 0)
-                            parts.append(
-                                f"\u2022 {label} \u2014 {earned}/{possible}"
-                            )
-                        parts.append("")
-                        parts.append("\U0001f534 Weakest")
-                        for item in weakest:
-                            label = _criterion_label(item.get("criterion", "?"))
-                            earned = item.get("points_earned", 0)
-                            possible = item.get("points_possible", 0)
-                            parts.append(
-                                f"\u2022 {label} \u2014 {earned}/{possible}"
-                            )
+                        )
                     parts.append("")
 
             except (json.JSONDecodeError, TypeError):
                 pass
 
         # Full score breakdown — every criterion defined in preferences,
-        # two per line, with N/A for unmatched criteria.
+        # one line, with N/A for unmatched criteria.
         if score_breakdown:
             try:
                 breakdown_data = json.loads(score_breakdown)
@@ -300,55 +293,25 @@ def _format_listing_message(listing: dict) -> str:
                     item.get("criterion", ""): item for item in breakdown_data
                 }
                 # Iterate over all criterion keys (stable order from preferences)
-                all_criteria = list(breakdown_map.keys())
-                pairs: list[list[str]] = []
-                current_pair: list[str] = []
-                for key in all_criteria:
+                criteria_text = []
+                for key in breakdown_map:
                     item = breakdown_map[key]
                     label = _criterion_label(key)
                     if item.get("matched", True):
                         earned = item.get("points_earned", 0)
                         possible = item.get("points_possible", 0)
-                        current_pair.append(f"{label} {earned}/{possible}")
+                        criteria_text.append(f"{label} {earned}/{possible}")
                     else:
-                        current_pair.append(f"{label} N/A")
-                    if len(current_pair) == 2:
-                        pairs.append(current_pair)
-                        current_pair = []
-                if current_pair:
-                    pairs.append(current_pair)
+                        criteria_text.append(f"{label} N/A")
 
-                parts.append("\U0001f4ca Full score breakdown")
-                for pair in pairs:
-                    parts.append(" \u00b7 ".join(pair))
+                parts.append(
+                    "\U0001f4ca Breakdown: "
+                    + " \u00b7 ".join(criteria_text)
+                )
                 parts.append("")
 
             except (json.JSONDecodeError, TypeError):
                 pass
-
-    # --- Key property information (only facts that are available) ---
-    key_bits = []
-    if listing.get("plot_size_m2"):
-        key_bits.append(f"Plot {listing['plot_size_m2']} m\u00b2")
-    if listing.get("year_built"):
-        key_bits.append(f"Built {listing['year_built']}")
-    ownership_type = listing.get("ownership_type")
-    if ownership_type == "full":
-        key_bits.append("Eigendom")
-    elif ownership_type == "erfpacht":
-        canon = listing.get("erfpacht_canon_annual")
-        if canon:
-            # Dutch decimal convention for the annual lease canon.
-            canon_text = f"{canon:g}".replace(".", ",")
-            key_bits.append(f"Erfpacht (\u20ac{canon_text}/yr)")
-        else:
-            key_bits.append("Erfpacht")
-    status = listing.get("status")
-    if status:
-        key_bits.append(str(status))
-    if key_bits:
-        parts.append("\u2728 " + " \u00b7 ".join(key_bits))
-        parts.append("")
 
     # --- URL ---
     if url:

@@ -889,7 +889,8 @@ additional verification steps:
 2. **Confidence flag on missing neighborhood data** — confirm the
    confidence flag appears correctly on listings where
    `neighborhood_avg_price_m2` is `None` (confirmed absent on some real
-   listings). The notification should show `"⚠ partial data (neighborhood_value)"`
+   listings). The notification should show
+   `"⚠️ Adjusted: Neighborhood data unavailable"`
    and the database should store `score_confidence = "partial"`.
 
 3. **Live run** — a real run with notifications enabled, confirming the
