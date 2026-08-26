@@ -245,3 +245,7 @@ Production execution is intended to run via cron roughly every 5 hours, terminat
 - `AGENTS.md` is the authoritative behavioral contract for any AI coding agent (Gemini CLI, OpenCode CLI, or others) working on this repository — it governs Git workflow, resource limits, scope discipline (Funda only), and the mandatory Funda "Learning Loop" documentation requirement.
 - Whenever a Funda scraper breakage is diagnosed and fixed, the fix must be logged in `docs/site-notes/funda.md` — read that file before debugging any extraction issue, since the fix may already be documented.
 - Documentation (`product.md`, `architecture.md`, `Operations.md`) is treated as part of the implementation and must stay in sync with code changes; this README summarizes but does not replace them.
+
+## Developers & Contributors:
+Yousef Babaki: https://github.com/josebbk
+Rashid Nazari: https://github.com/arashid02-n
