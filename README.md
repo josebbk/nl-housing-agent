@@ -247,5 +247,5 @@ Production execution is intended to run via cron roughly every 5 hours, terminat
 - Documentation (`product.md`, `architecture.md`, `Operations.md`) is treated as part of the implementation and must stay in sync with code changes; this README summarizes but does not replace them.
 
 ## Developers & Contributors:
-Yousef Babaki: https://github.com/josebbk
-Rashid Nazari: https://github.com/arashid02-n
+- Yousef Babaki: https://github.com/josebbk
+- Rashid Nazari: https://github.com/arashid02-n
