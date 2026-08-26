@@ -877,33 +877,53 @@ the Phase 1 values:
         "plot_size_min": null,
         "plot_size_max": null,
         "property_type": null,
-        "energy_label_min": null,
-        "energy_label_max": null,
+        "energy_labels": ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"],
         "transaction_type": null,
-        "radius_km": null,
-        "construction_type": null
+        "radius_km": 10,
+        "construction_type": null,
+        "construction_periods": ["1971-1980", "1981-1990", "1991-2000", "2001-2010", "2011-2020", "after_2020"],
+        "garden": true,
+        "garden_size_min": 70,
+        "availability": "available",
+        "sort": "publish_date_utc_desc"
     }
 }
 ```
 
-| Key                 | Type       | Default | Meaning                                     |
-| ------------------- | ---------- | ------- | ------------------------------------------- |
-| `price_min`         | int        | 550000  | Minimum asking price (€)                    |
-| `price_max`         | int        | 750000  | Maximum asking price (€)                    |
-| `bedrooms_min`      | int        | 3       | Minimum bedrooms                            |
-| `bedrooms_max`      | int / null | none    | Maximum bedrooms                            |
-| `living_area_min`   | int        | 100     | Minimum living area (m²)                    |
-| `living_area_max`   | int / null | none    | Maximum living area (m²)                    |
-| `rooms_min`         | int / null | none    | Minimum total rooms                         |
-| `rooms_max`         | int / null | none    | Maximum total rooms                         |
-| `plot_size_min`     | int / null | none    | Minimum plot size (m²)                      |
-| `plot_size_max`     | int / null | none    | Maximum plot size (m²)                      |
-| `property_type`     | str / null | none    | Required property type, e.g. `appartement`  |
-| `energy_label_min`  | str / null | none    | Minimum energy label, e.g. `B`              |
-| `energy_label_max`  | str / null | none    | Maximum energy label, e.g. `C`              |
-| `transaction_type`  | str / null | none    | `koop` (for sale) or `huur` (rent)          |
-| `radius_km`         | int / null | none    | Search radius (km) around the area          |
-| `construction_type` | str / null | none    | Exact construction type: `existing`/`new`   |
+| Key                    | Type       | Default        | Meaning                                        |
+| ---------------------- | ---------- | -------------- | ---------------------------------------------- |
+| `price_min`            | int        | 550000         | Minimum asking price (€)                       |
+| `price_max`            | int        | 750000         | Maximum asking price (€)                       |
+| `bedrooms_min`         | int        | 3              | Minimum bedrooms                               |
+| `bedrooms_max`         | int / null | none           | Maximum bedrooms                               |
+| `living_area_min`      | int        | 100            | Minimum living area (m²)                       |
+| `living_area_max`      | int / null | none           | Maximum living area (m²)                       |
+| `rooms_min`            | int / null | none           | Minimum total rooms                            |
+| `rooms_max`            | int / null | none           | Maximum total rooms                            |
+| `plot_size_min`        | int / null | none           | Minimum plot size (m²)                         |
+| `plot_size_max`        | int / null | none           | Maximum plot size (m²)                         |
+| `property_type`        | str / null | none           | Required property type, e.g. `appartement`     |
+| `energy_labels`        | list / null | none          | Ordered energy labels sent to Funda verbatim   |
+| `transaction_type`     | str / null | none           | `koop` (for sale) or `huur` (rent)             |
+| `radius_km`            | int / null | none           | Search radius (km); emitted as `radius_search` |
+| `construction_type`    | str / null | none           | Exact construction type: `existing`/`new`      |
+| `construction_periods` | list / null | none          | Human-readable build-year periods (mapped)     |
+| `garden`               | bool / null | none          | `true` adds `exterior_space_type=garden`       |
+| `garden_size_min`      | int / null | none           | Minimum garden size (m²); requires `garden`    |
+| `availability`         | str / null | none           | Free-string `availability` value               |
+| `sort`                 | str / null | none           | Free-string `sort` value                       |
+
+> **Superseded:** the `energy_label_min` / `energy_label_max` keys were
+> removed and replaced by the single ordered `energy_labels` list. The
+> radius no longer uses the embedded-JSON-array encoding (see below).
+
+The `energy_labels` default order (`A++++, A+++, A++, A+, A, B, C, D,
+A+++++`) is preserved exactly as it appeared in the authoritative source
+URL, not sorted ordinally. This ordering is unusual (`A+++++` appears last,
+after `D`) and should be investigated later to confirm whether Funda's
+search endpoint is actually order-sensitive, or whether this was an
+artifact of how the URL was originally captured. Do not silently reorder
+it.
 
 The `null` optional values mean "no preference filter". Missing keys fall
 back to the defaults shown above. Each key must appear in its own section
@@ -919,15 +939,31 @@ Unknown keys are rejected so a typo cannot silently change behavior.
 open-ended (e.g. `floor_area=100-` when only `living_area_min` is set).
 On the storage query a `null` bound disables that side of the range.
 
-Three filters are **single-value** (no range makes sense):
+Several filters are **single-value** (no range makes sense):
 
 * `transaction_type` — maps to Funda's offering type (`koop`/`huur`).
   When unset the scraper defaults to `koop`, preserving for-sale behavior.
-* `radius_km` — a single positive integer. When set, Funda encodes it
-  inside `selected_area` as a JSON array (`["amsterdam,{N}km"]`), which is
-  URL-encoded by the scraper.
+* `radius_km` — a single positive integer. It is emitted as its own
+  `radius_search={radius_km}` query parameter; `selected_area` stays a plain
+  area slug (e.g. `amsterdam`).
+
+  > **Superseded:** the earlier embedded-radius encoding — where
+  > `radius_km` was folded into `selected_area` as a JSON-array string
+  > `["amsterdam,{N}km"]` — was removed. `selected_area` is now always a
+  > plain slug and the radius travels in `radius_search` instead.
 * `construction_type` — an exact-match categorical value (`existing` or
   `new`). Set to `null` for no restriction.
+* `energy_labels` — an ordered list of energy labels, sent to Funda
+  verbatim as `energy_label=…` (each label percent-encoded, comma-joined).
+  Search-level only.
+* `construction_periods` — a list of human-readable build-year period keys,
+  mapped to Funda's internal codes (see `CONSTRUCTION_PERIOD_MAP` below).
+  Search-level only.
+* `garden` — a boolean; `true` emits `exterior_space_type=garden`.
+* `garden_size_min` — a non-negative integer; emits
+  `exterior_space_garden_size={min}-` and requires `garden=true`.
+* `availability` — a free-string value emitted as `availability=…`.
+* `sort` — a free-string value emitted as `sort=…`.
 
 ### `src/config.py` — FilterConfig
 
@@ -945,12 +981,38 @@ class FilterConfig:
     plot_size_min: int | None = None
     plot_size_max: int | None = None
     property_type: str | None = None
-    energy_label_min: str | None = None
-    energy_label_max: str | None = None
+    energy_labels: list[str] | None = None
     transaction_type: str | None = None
     radius_km: int | None = None
     construction_type: str | None = None
+    construction_periods: list[str] | None = None
+    garden: bool | None = None
+    garden_size_min: int | None = None
+    availability: str | None = None
+    sort: str | None = None
 ```
+
+> **Superseded:** `energy_label_min` / `energy_label_max` were removed from
+> `FilterConfig` (fields, validation, and the uppercase-normalization logic)
+> and replaced by the ordered `energy_labels` list.
+
+`CONSTRUCTION_PERIOD_MAP` (module-level dict in `src/config.py`) translates
+the human-readable period keys used in `config/filters.json` to Funda's
+internal codes:
+
+| Human-readable key | Funda code              |
+| ------------------ | ----------------------- |
+| `"1971-1980"`      | `from_1971_to_1980`     |
+| `"1981-1990"`      | `from_1981_to_1990`     |
+| `"1991-2000"`      | `from_1991_to_2000`     |
+| `"2001-2010"`      | `from_2001_to_2010`     |
+| `"2011-2020"`      | `from_2011_to_2020`     |
+| `"after_2020"`     | `after_2020`            |
+
+Every configured key must exist in this map; an invalid key raises a
+`ValueError` listing the invalid key(s) and the valid options. The mapping
+to Funda codes happens in `main.py` (and in the URL-building test), not in
+`FilterConfig` itself.
 
 * `FilterConfig` is immutable (`frozen=True`); validation runs at
   construction in `__post_init__`.
@@ -979,11 +1041,22 @@ Validation rules:
 * `transaction_type`, when set, must be `koop` or `huur` (lowercase)
 * `construction_type`, when set, must be `existing` or `new` (lowercase)
 * `property_type`, when set, must be a non-empty string
-* `energy_label_min`/`energy_label_max`, when set, must be a non-empty string
-  and are normalized to uppercase (e.g. `b` → `B`), following the `scoring.py`
-  convention
+* `energy_labels`, when set, must be a non-empty list of non-empty strings.
+  No further validation against a fixed vocabulary — Funda accepts whatever
+  is configured, and the list is passed verbatim in the configured order.
+* `construction_periods`, when set, must be a non-empty list of strings, and
+  every key must exist in `CONSTRUCTION_PERIOD_MAP` (an invalid key raises
+  `ValueError` listing the invalid key(s) and the valid options)
+* `garden`, when set, must be a boolean
+* `garden_size_min`, when set, must be a non-negative integer and requires
+  `garden=true` (a `garden_size_min` without `garden` raises `ValueError`)
+* `availability` and `sort`, when set, must be non-empty strings (free-form,
+  no fixed vocabulary)
 * the file must be a JSON object; invalid JSON or an unreadable/missing file
   raises `ValueError`
+
+> **Superseded:** the `energy_label_min`/`energy_label_max` validation
+> (non-empty string + uppercase normalization) was removed with those fields.
 
 ### `src/storage.py` — parameterized matching query
 
@@ -1005,15 +1078,21 @@ fetch_unnotified_matching_listings(
   * `property_type` → `property_type = ?` (exact match)
   * `plot_size_min` → `plot_size_m2 >= ?`
   * `plot_size_max` → `plot_size_m2 <= ?`
-  * `energy_label_min`/`energy_label_max` → `UPPER(energy_label) IN (…)` where
-    the accepted set is every label at least as good as the minimum (and at
-    most as good as the maximum) on the project energy-label scale
-    (`config/preferences.json` → `energy_label_scale`,
-    `["G","F","E","D","C","B","A","A+","A++","A+++","A++++"]`, worst → best).
-    A configured bound that is not on the scale raises `ValueError`.
-* `rooms_min`/`rooms_max`, `radius_km`, and `construction_type` are
-  **search-level** filters: they are applied to the Funda search URL, not the
-  storage query (see `main.py` orchestration below).
+
+> **Superseded (filters task):** the DB-level energy-label filter
+> (`UPPER(energy_label) IN (…)`, driven by `energy_label_min`/`max`) was
+> removed from `fetch_unnotified_matching_listings()` and from
+> `main.py::_run_backfill()`, and is **intentionally not replaced**. Funda
+> now enforces the energy-label filter server-side via the `energy_label`
+> search parameter. The `_acceptable_energy_labels()` helper was removed
+> with it. `config/preferences.json`'s `energy_label_scale` key and
+> `scoring.py` were **not** touched — that scale is used by the scoring
+> formula and is unrelated to the search filter.
+* `rooms_min`/`rooms_max`, `radius_km`, `construction_type`,
+  `energy_labels`, `construction_periods`, `garden`, `garden_size_min`,
+  `availability`, and `sort` are **search-level** filters: they are applied
+  to the Funda search URL, not the storage query (see `main.py`
+  orchestration below).
 * NULL semantics: a listing with a NULL value for an optional field never
   satisfies an enabled preference filter (standard SQL comparison).
 
@@ -1022,16 +1101,19 @@ fetch_unnotified_matching_listings(
 * `main()` loads `filters = FilterConfig.from_file()` once at run start.
 * The **search-level** filters are passed to `scrape_funda(...)`:
   `price_min`, `price_max`, `living_area_min`/`max`, `bedrooms_min`/`max`,
-  `rooms_min`/`max`, `radius_km`, `construction_type`, and
-  `offering_type` (derived from `transaction_type`, defaulting to `koop`).
+  `rooms_min`/`max`, `radius_km`, `construction_type`, `energy_labels`,
+  `construction_periods` (mapped via `CONSTRUCTION_PERIOD_MAP`), `garden`,
+  `garden_size_min`, `availability`, `sort`, and `offering_type` (derived
+  from `transaction_type`, defaulting to `koop`).
 * The same `filters` object is passed to
   `fetch_unnotified_matching_listings(db_path, filters=filters)`, so the
   storage query uses exactly the loaded configuration. The **storage-level**
-  filters (`property_type`, `plot_size_min`/`max`, `energy_label_min`/`max`,
-  `bedrooms_max`, `living_area_max`) are applied in the matching query.
-* Search-level filters (`rooms_min`/`max`, `radius_km`, `construction_type`)
-  are **not** passed to the storage query, which does not accept those
-  parameters.
+  filters (`property_type`, `plot_size_min`/`max`, `bedrooms_max`,
+  `living_area_max`) are applied in the matching query.
+* Search-level filters (`rooms_min`/`max`, `radius_km`, `construction_type`,
+  `energy_labels`, `construction_periods`, `garden`, `garden_size_min`,
+  `availability`, `sort`) are **not** passed to the storage query, which does
+  not accept those parameters.
 * All Phase 1 orchestration (init_db, insert, notify, mark-as-notified,
   dry-run, exit codes, logging) is unchanged.
 

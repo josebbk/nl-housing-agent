@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .config import FilterConfig, RetentionConfig
+from .config import CONSTRUCTION_PERIOD_MAP, FilterConfig, RetentionConfig
 from .scraper import scrape_funda
 from .detail_scraper import fetch_listing_details
 from .scoring import score_listing, load_preferences
@@ -460,6 +460,11 @@ def main() -> None:
     # type (koop = for sale, huur = rent). When unset it defaults to "koop",
     # preserving the Phase 1 for-sale behavior.
     offering_type = filters.transaction_type or "koop"
+    construction_periods = (
+        [CONSTRUCTION_PERIOD_MAP[k] for k in filters.construction_periods]
+        if filters.construction_periods is not None
+        else None
+    )
     try:
         listings = scrape_funda(
             area="amsterdam",
@@ -474,6 +479,12 @@ def main() -> None:
             rooms_max=filters.rooms_max,
             radius_km=filters.radius_km,
             construction_type=filters.construction_type,
+            energy_labels=filters.energy_labels,
+            construction_periods=construction_periods,
+            garden=filters.garden,
+            garden_size_min=filters.garden_size_min,
+            availability=filters.availability,
+            sort=filters.sort,
             publication_date_days=scan_publication_date_days,
             max_pages=scan_max_pages,
         )
@@ -670,12 +681,6 @@ def _run_backfill(db_path: str, filters: FilterConfig, dry_run: bool, run_start:
             conditions.append("plot_size_m2 >= ?")
             params.append(filters.plot_size_min)
 
-        if filters.energy_label_min is not None:
-            acceptable = storage._acceptable_energy_labels(filters.energy_label_min)
-            placeholders = ", ".join("?" for _ in acceptable)
-            conditions.append(f"UPPER(energy_label) IN ({placeholders})")
-            params.extend(acceptable)
-
         query = "SELECT * FROM listings WHERE {} AND score IS NULL;".format(
             " AND ".join(conditions)
         )
@@ -811,14 +816,32 @@ def _run_seed(db_path: str, filters: FilterConfig, run_start: datetime) -> None:
         sys.exit(1)
 
     # --- 1. Scrape ---
+    offering_type = filters.transaction_type or "koop"
+    construction_periods = (
+        [CONSTRUCTION_PERIOD_MAP[k] for k in filters.construction_periods]
+        if filters.construction_periods is not None
+        else None
+    )
     try:
         listings = scrape_funda(
             area="amsterdam",
-            offering_type="koop",
+            offering_type=offering_type,
             price_min=filters.price_min,
             price_max=filters.price_max,
             floor_area_min=filters.living_area_min,
+            floor_area_max=filters.living_area_max,
             bedrooms_min=filters.bedrooms_min,
+            bedrooms_max=filters.bedrooms_max,
+            rooms_min=filters.rooms_min,
+            rooms_max=filters.rooms_max,
+            radius_km=filters.radius_km,
+            construction_type=filters.construction_type,
+            energy_labels=filters.energy_labels,
+            construction_periods=construction_periods,
+            garden=filters.garden,
+            garden_size_min=filters.garden_size_min,
+            availability=filters.availability,
+            sort=filters.sort,
             max_pages=5,
         )
         stats = {"listings_scraped": len(listings)}

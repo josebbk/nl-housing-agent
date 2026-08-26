@@ -153,15 +153,40 @@ the `required` key and every optional preference under the `optional` key
   `living_area_max`.
 * **rooms** — `rooms_min` and `rooms_max` (total rooms, search-level only).
 * **plot_size** — `plot_size_min` and `plot_size_max` (m²).
-* **energy_label** — `energy_label_min` and `energy_label_max`, G (lowest) →
-  A++++ (highest).
+
+> **Superseded (filters task):** the `energy_label` ranged preference
+> (`energy_label_min` / `energy_label_max`, G (lowest) → A++++ (highest)) was
+> removed and replaced by the ordered `energy_labels` list below.
 
 **Single-value filters:**
 
 * **property_type** — only listings of this type match (e.g. `appartement`).
 * **transaction_type** — `koop` (for sale, the default) or `huur` (rent).
-* **radius_km** — a search radius in kilometres around Amsterdam.
+* **radius_km** — a search radius in kilometres around Amsterdam, sent as a
+  separate `radius_search` parameter (the old embedded `selected_area`
+  JSON-array encoding is superseded).
 * **construction_type** — exact construction type, `existing` or `new`.
+
+**List-valued and other search-level filters:**
+
+* **energy_labels** — an ordered list of energy labels (e.g. `["A++++",
+  "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"]`) sent to Funda verbatim
+  in the configured order. The default order is unusual (`A+++++` appears
+  last, after `D`) and is preserved exactly as captured from the
+  authoritative source URL — do not silently reorder it.
+* **construction_periods** — build-year periods expressed as human-readable
+  keys (`"1971-1980"`, `"1981-1990"`, …, `"after_2020"`), mapped to Funda's
+  internal codes via `CONSTRUCTION_PERIOD_MAP`.
+* **garden** — boolean; `true` requires a garden
+  (`exterior_space_type=garden`).
+* **garden_size_min** — minimum garden size in m²; only meaningful when
+  `garden` is `true`.
+* **availability** — free-string availability filter (e.g. `"available"`).
+* **sort** — free-string sort ordering (e.g. `"publish_date_utc_desc"`).
+
+These list-valued, boolean, and free-string filters are **search-level only**
+and, like `rooms_min`/`rooms_max`, `radius_km`, and `construction_type`, are
+not applied in the local storage matching query.
 
 When a preference is unset (`null` in `config/filters.json`), it imposes no
 restriction. For ranged filters a `null` bound leaves that side open-ended.
