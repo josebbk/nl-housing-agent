@@ -68,46 +68,15 @@ _IMAGE_USER_AGENT = (
     "Chrome/139.0.0.0 Safari/537.36"
 )
 
-# Display-name mapping for scoring criteria.
-# Raw keys come from scoring.py / config/preferences.json weights;
-# display names are presentation-only and must not alter criterion keys
-# used by scoring.py or storage.py.
-_CRITERION_LABELS: dict[str, str] = {
-    "neighborhood_value": "Neighborhood",
-    "construction_condition": "Condition",
-    "ownership": "Ownership",
-    "energy_label": "Energy",
-    "living_area": "Living area",
-    "parking": "Parking",
-    "rooms": "Rooms",
-    "bathrooms": "Bathrooms",
-    "garden": "Garden",
-    "garage": "Garage",
-    "plot_size": "Plot size",
-    "balcony": "Balcony",
-    "heating": "Heating",
-}
-
-
-def _criterion_label(key: str) -> str:
-    """Return the human-readable label for a criterion key."""
-    return _CRITERION_LABELS.get(key, key)
-
-
 # ---------------------------------------------------------------------------
-# Presentation-layer value mapping (English-only notification)
+# Presentation-layer value mapping (English-first notification)
 # ---------------------------------------------------------------------------
-# detail_scraper.py stores garage_type/parking_type either as short English
-# codes or, when unclassified, as raw Dutch page text. These mappings
-# convert them to English at presentation level ONLY — the stored values,
-# scraping and scoring are never touched. They mirror the keyword logic
-# already used by detail_scraper.py / scoring.py.
-
-_GARAGE_VALUE_MAP: dict[str, str] = {
-    "attached": "Attached",
-    "detached": "Detached",
-    "carport": "Carport",
-}
+# detail_scraper.py stores parking_type either as a short English code or,
+# when unclassified, as raw Dutch page text. These mappings convert values
+# to English at presentation level ONLY — the stored values, scraping and
+# scoring are never touched. They mirror the keyword logic already used by
+# detail_scraper.py / scoring.py. Raw Dutch source terminology is kept in
+# parentheses after the English meaning.
 
 _PARKING_VALUE_MAP: dict[str, str] = {
     "private": "Private",
@@ -125,71 +94,33 @@ _VALID_ENERGY_LABEL = re.compile(r"^[A-G](?:\+{1,4})?$")
 _HOUSE_NUMBER_SUFFIX = re.compile(r"\s+\d+(?:-\d+)?(?:-[A-Za-z]{1,4})?$")
 
 
-def _garage_value(raw: str | None) -> str:
-    """English presentation value for a stored garage_type.
-
-    Mirrors the extractor's classification (aangebouwd/inpandig ->
-    attached, vrijstaand -> detached, carport -> carport) and scoring's
-    "garage mogelijk" tier. Returns "No" when the value is absent or
-    unrecognized: a missing garage_type is a confirmed negative (Funda
-    omits the garage section when a listing has no garage), so the line
-    is always shown, including as "Garage: No".
-    """
-    if raw:
-        primary = raw.strip().split("+")[0].strip().lower()
-        if primary in _GARAGE_VALUE_MAP:
-            return _GARAGE_VALUE_MAP[primary]
-        if "mogelijk" in primary:
-            return "Possible"
-        if "niet aanwezig" in primary or "geen" in primary:
-            return "No"
-        for keyword, label in (
-            ("inpandig", "Attached"),
-            ("aangebouwd", "Attached"),
-            ("vrijstaand", "Detached"),
-            ("carport", "Carport"),
-        ):
-            if keyword in primary:
-                return label
-        if any(kw in primary for kw in ("garagebox", "parkeerkelder", "souterrain", "parkeerplaats")):
-            return "Yes"
-    return "No"
-
-
 def _parking_value(raw: str | None) -> str:
     """English presentation value for a stored parking_type.
 
-    Mirrors the extractor's classification (eigen terrein -> private,
-    carport -> carport, openbaar -> public, betaald -> paid) and covers
-    raw Dutch phrases the extractor does not classify. Returns "No"
-    when the value is absent or unrecognized so the line is always
-    shown, including as "Parking: No".
+    English codes map directly to English labels. Raw Dutch page text is
+    shown as "English meaning (original Dutch term)", e.g.
+    "Available (Parkeervergunning)". Returns "No" when the value is
+    absent or unrecognized so the line is always shown.
     """
-    if raw:
-        primary = raw.strip().split("+")[0].strip().lower()
-        if primary in _PARKING_VALUE_MAP:
-            return _PARKING_VALUE_MAP[primary]
-        if "geen" in primary:
-            return "No"
-        for keyword, label in (
-            ("eigen terrein", "Private"),
-            ("parkeervergunning", "Permit"),
-            ("vergunning", "Permit"),
-            ("carport", "Carport"),
-            ("openbaar", "Public"),
-            ("betaald", "Paid"),
-        ):
-            if keyword in primary:
-                return label
+    if not raw:
+        return "No"
+    primary = raw.strip().split("+")[0].strip()
+    primary_lower = primary.lower()
+    if primary_lower in _PARKING_VALUE_MAP:
+        return _PARKING_VALUE_MAP[primary_lower]
+    if "geen" in primary_lower:
+        return f"No ({primary})"
+    for keyword, label in (
+        ("eigen terrein", "Private"),
+        ("parkeervergunning", "Available"),
+        ("vergunning", "Available"),
+        ("carport", "Carport"),
+        ("openbaar", "Public"),
+        ("betaald", "Paid"),
+    ):
+        if keyword in primary_lower:
+            return f"{label} ({primary})"
     return "No"
-
-
-def _garden_present(listing: dict) -> bool:
-    """Return True when the listing reliably has a garden."""
-    if listing.get("garden_present"):
-        return True
-    size = listing.get("garden_size_m2")
-    return isinstance(size, (int, float)) and size > 0
 
 
 def _street_from_address(address: str) -> str | None:
@@ -246,48 +177,41 @@ def _get_chat_id() -> str:
 
 
 def _format_listing_message(listing: dict) -> str:
-    """Format a listing dict into a clean Telegram HTML message.
+    """Format a listing dict into the approved Telegram HTML template.
 
-    Notification layout (presentation-only; every value comes from the
-    listing dict exactly as produced by scraper.py / detail_scraper.py /
-    scoring.py). Every metric line follows the structure
-    ``EMOJI + English metric name + ":" + value`` and no Dutch property
-    terminology is displayed:
+    Presentation-only; every value comes from the listing dict exactly as
+    produced by scraper.py / detail_scraper.py / scoring.py. The Score is
+    intentionally NOT displayed — the score fields and all scoring logic
+    remain untouched. Layout:
 
-        🏠 <b>{address}</b>
+        <b>{address}</b>
 
         💰 Price: €{price}
-        📐 Size: {living_area} m² · €{price/m²}/m²
+        🏠 Living area Size: {living_area} m² · €{price/m²}/m²
+        🌳 Plot Size: {plot_size_m2} m²
         🛏 Bedrooms: {bedrooms}
+        🌳 Garden area: {garden_size_m2} m² / Yes / No
+        📍 Location: {city} · {street} · <a href="{url}">View on Funda</a>
         ⚡ Energy label: {label}
-        📍 Location: {city} · {street}
-        📏 Plot: {plot_size_m2} m²
         🏗 Year built: {year_built}
-        🚗 Garage: {value}
         🅿️ Parking: {value}
-        🌳 Garden: Yes
 
-        ⭐ Score: <b>{score}/100</b>
-        ⚠️ Adjusted: {missing criteria} data unavailable   (partial only)
-        🟢 Best: {criterion} {earned}/{possible} · ...
-        🔴 Weakest: {criterion} {earned}/{possible} · ...
-        📊 Breakdown: {criterion} {earned}/{possible} · ... ({N/A} when missing)
+    Rules:
 
-        🔗 <a href="{url}">View on Funda</a>
-
-    The address is kept exactly as provided by the listing. Metrics that
-    are missing are omitted from the optional lines — never invented.
-    Price-per-m² is computed only from the two required fields (price,
-    living_area_m2). Property type, listing status and ownership
-    (Dutch terminology such as "Eengezinswoning", "Beschikbaar",
-    "Erfpacht") are not displayed. Garage / Parking / Garden are always
-    shown; their values are converted to English at presentation level
-    (_garage_value / _parking_value) and absence renders as "No" (a
-    missing garage_type is a confirmed negative per the Funda page
-    structure). Location is built from the available components in the
-    order City → Area/District → Street → Postal code; Area/District and
-    Postal code are not extracted by the project and are therefore
-    never fabricated.
+    * every metric line follows ``EMOJI + English metric name + ":" +
+      value``;
+    * missing metrics are omitted — never invented. "Number of stories"
+      and Pros/Cons/Bottom line require data the project does not
+      extract (number of floors, property description text) and are
+      therefore omitted rather than fabricated;
+    * price-per-m² is computed only from the two required fields
+      (price, living_area_m2);
+    * non-numeric values are English; raw Dutch source terminology is
+      kept in parentheses (see _parking_value);
+    * the address is kept exactly as provided; Location combines the
+      available components in the order City → Area/District → Street →
+      Postal code (Area/District and Postal code are never invented)
+      and carries the Funda link.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -304,155 +228,52 @@ def _format_listing_message(listing: dict) -> str:
     if price and living_area:
         price_per_m2_text = f"€{price / living_area:,.0f}/m²"
 
-    # --- Header and metric lines ---
     parts: list[str] = []
-    parts.append(f"\U0001f3e0 <b>{address}</b>")
+    parts.append(f"<b>{address}</b>")
     parts.append("")
 
     parts.append(f"\U0001f4b0 Price: {price_text}")
 
-    size_line = f"\U0001f4d0 Size: {area_text}"
+    size_line = f"\U0001f3e0 Living area Size: {area_text}"
     if price_per_m2_text:
         size_line += f" \u00b7 {price_per_m2_text}"
     parts.append(size_line)
 
+    if listing.get("plot_size_m2"):
+        parts.append(f"\U0001f333 Plot Size: {listing['plot_size_m2']} m\u00b2")
+
     parts.append(f"\U0001f6cf Bedrooms: {bed_text}")
+
+    garden_size = listing.get("garden_size_m2")
+    if isinstance(garden_size, (int, float)) and garden_size > 0:
+        garden_text = f"{garden_size} m\u00b2"
+    elif listing.get("garden_present"):
+        garden_text = "Yes"
+    else:
+        garden_text = "No"
+    parts.append(f"\U0001f333 Garden area: {garden_text}")
+
+    if neighborhood or url:
+        location_bits = []
+        if neighborhood:
+            location_bits.append(neighborhood.title())
+            street = _street_from_address(address if address != "N/A" else "")
+            if street:
+                location_bits.append(street)
+        if url:
+            location_bits.append(f'<a href="{url}">View on Funda</a>')
+        parts.append("\U0001f4cd Location: " + " \u00b7 ".join(location_bits))
 
     energy_label = listing.get("energy_label")
     if energy_label and _VALID_ENERGY_LABEL.match(str(energy_label).strip().upper()):
         parts.append(f"\u26a1 Energy label: {str(energy_label).strip().upper()}")
 
-    if neighborhood:
-        location_bits = [neighborhood.title()]
-        street = _street_from_address(address if address != "N/A" else "")
-        if street:
-            location_bits.append(street)
-        parts.append("\U0001f4cd Location: " + " \u00b7 ".join(location_bits))
-
-    if listing.get("plot_size_m2"):
-        parts.append(f"\U0001f4cf Plot: {listing['plot_size_m2']} m\u00b2")
-
     if listing.get("year_built"):
         parts.append(f"\U0001f3d7 Year built: {listing['year_built']}")
 
-    garage_value = _garage_value(listing.get("garage_type"))
-    parts.append(f"\U0001f697 Garage: {garage_value}")
-
-    parking_value = _parking_value(listing.get("parking_type"))
-    parts.append(f"\U0001f17f\ufe0f Parking: {parking_value}")
-
-    parts.append(f"\U0001f333 Garden: {'Yes' if _garden_present(listing) else 'No'}")
-
-    parts.append("")
-
-    # --- Score section ---
-    score = listing.get("score")
-    confidence = listing.get("score_confidence", "")
-    score_breakdown = listing.get("score_breakdown")
-
-    if score is None or confidence == "no_data":
-        parts.append("\u2b50 Score: unavailable")
-    else:
-        parts.append(f"\u2b50 Score: <b>{score}/100</b>")
-
-        # Adjusted line — only when confidence is "partial"
-        if confidence == "partial" and score_breakdown:
-            try:
-                breakdown_data = json.loads(score_breakdown)
-                missing = [
-                    _criterion_label(item.get("criterion", "unknown"))
-                    for item in breakdown_data
-                    if not item.get("matched", True)
-                ]
-                if missing:
-                    parts.append(
-                        f"\u26a0\ufe0f Adjusted: "
-                        f"{', '.join(missing)} data unavailable"
-                    )
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        # Best / Weakest — sorted by points_earned (absolute score, not ratio)
-        # so the listing's strongest/weakest criteria are shown by their
-        # contribution to the total score.
-        if score_breakdown:
-            try:
-                breakdown_data = json.loads(score_breakdown)
-                matched = [
-                    item for item in breakdown_data if item.get("matched", True)
-                ]
-
-                if matched:
-                    # Sort descending by points_earned for best, ascending for weakest
-                    sorted_desc = sorted(
-                        matched, key=lambda x: x.get("points_earned", 0), reverse=True
-                    )
-                    sorted_asc = sorted(
-                        matched, key=lambda x: x.get("points_earned", 0)
-                    )
-
-                    best = sorted_desc[:3]
-                    weakest = sorted_asc[:3]
-
-                    def _fmt_criterion(item: dict) -> str:
-                        label = _criterion_label(item.get("criterion", "?"))
-                        earned = item.get("points_earned", 0)
-                        possible = item.get("points_possible", 0)
-                        return f"{label} {earned}/{possible}"
-
-                    # If ≤6 criteria matched, best and weakest may overlap.
-                    # With ≤3 matched criteria, show only Best.
-                    # With 4-6 matched criteria, show Best (top 3) and Weakest
-                    # (bottom 3), allowing overlap at the boundary.
-                    parts.append(
-                        "\U0001f7e2 Best: "
-                        + " \u00b7 ".join(_fmt_criterion(item) for item in best)
-                    )
-                    if len(matched) > 3:
-                        parts.append(
-                            "\U0001f534 Weakest: "
-                            + " \u00b7 ".join(
-                                _fmt_criterion(item) for item in weakest
-                            )
-                        )
-                    parts.append("")
-
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        # Full score breakdown — every criterion defined in preferences,
-        # one line, with N/A for unmatched criteria.
-        if score_breakdown:
-            try:
-                breakdown_data = json.loads(score_breakdown)
-                # Build a lookup by criterion key for O(1) access
-                breakdown_map = {
-                    item.get("criterion", ""): item for item in breakdown_data
-                }
-                # Iterate over all criterion keys (stable order from preferences)
-                criteria_text = []
-                for key in breakdown_map:
-                    item = breakdown_map[key]
-                    label = _criterion_label(key)
-                    if item.get("matched", True):
-                        earned = item.get("points_earned", 0)
-                        possible = item.get("points_possible", 0)
-                        criteria_text.append(f"{label} {earned}/{possible}")
-                    else:
-                        criteria_text.append(f"{label} N/A")
-
-                parts.append(
-                    "\U0001f4ca Breakdown: "
-                    + " \u00b7 ".join(criteria_text)
-                )
-                parts.append("")
-
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-    # --- URL ---
-    if url:
-        parts.append(f'\U0001f517 <a href="{url}">View on Funda</a>')
+    parts.append(
+        f"\U0001f17f\ufe0f Parking: {_parking_value(listing.get('parking_type'))}"
+    )
 
     return "\n".join(parts)
 
