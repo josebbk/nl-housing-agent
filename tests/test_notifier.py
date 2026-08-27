@@ -334,6 +334,94 @@ class TestLocationConstruction(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Pros / Cons / Bottom line from the property description
+# ---------------------------------------------------------------------------
+
+DESCRIPTION_PRO = (
+    "Ruime woning met uitbouw, vrij uitzicht over het water en een "
+    "schuur. Instapklaar en voorzien van dubbel glas."
+)
+DESCRIPTION_CON = (
+    "Gedateerde woning met achterstallig onderhoud en gehorige "
+    "constructie; kleine badkamer. Verbouwing nodig."
+)
+
+
+class TestProsConsBottomLine(unittest.TestCase):
+    def test_sections_omitted_without_description(self):
+        msg = _format_listing_message(make_listing())
+        self.assertNotIn("🟢 Pros:", msg)
+        self.assertNotIn("🔴 Cons:", msg)
+        self.assertNotIn("Bottom line:", msg)
+
+    def test_pros_extracted_only_from_present_phrases(self):
+        msg = _format_listing_message(make_listing(description=DESCRIPTION_PRO))
+        self.assertIn("🟢 Pros:", msg)
+        self.assertIn("• Extension added", msg)
+        self.assertIn("• Unobstructed views", msg)
+        self.assertIn("• Garden shed", msg)
+        self.assertIn("• Move-in ready condition", msg)
+        self.assertIn("• Double glazing", msg)
+        # phrases NOT in the description must not appear
+        self.assertNotIn("New kitchen", msg)
+        self.assertNotIn("Rooftop terrace", msg)
+        self.assertNotIn("🔴 Cons:", msg)
+
+    def test_cons_extracted_only_from_present_phrases(self):
+        msg = _format_listing_message(make_listing(description=DESCRIPTION_CON))
+        self.assertIn("🔴 Cons:", msg)
+        self.assertIn("• Dated interior", msg)
+        self.assertIn("• Maintenance backlog", msg)
+        self.assertIn("• Noise-prone construction", msg)
+        self.assertIn("• Compact bathroom", msg)
+        self.assertIn("• Renovation needed", msg)
+        self.assertNotIn("Busy road nearby", msg)
+        self.assertNotIn("🟢 Pros:", msg)
+
+    def test_bullets_capped_at_five(self):
+        many = " ".join([
+            "instapklaar gerenoveerd nieuwe keuken vloerverwarming",
+            "dakterras zonnig vrij uitzicht dubbel glas rustig berging luxe",
+        ])
+        msg = _format_listing_message(make_listing(description=many))
+        pros_section = msg.split("🟢 Pros:")[1].split("\n")[1:]
+        bullets = [l for l in pros_section if l.startswith("•")]
+        self.assertLessEqual(len(bullets), 5)
+
+    def test_negated_phrases_do_not_match(self):
+        msg = _format_listing_message(make_listing(
+            description="niet instapklaar, zonder berging, geen dubbel glas"))
+        self.assertNotIn("Move-in ready condition", msg)
+        self.assertNotIn("Storage shed", msg)
+        self.assertNotIn("Double glazing", msg)
+
+    def test_erfpacht_bought_off_is_not_a_con(self):
+        msg = _format_listing_message(make_listing(
+            description="Woning op erfpachtgrond, welke eeuwigdurend is "
+                        "afgekocht."))
+        self.assertNotIn("Leasehold ground rent", msg)
+        msg = _format_listing_message(make_listing(
+            description="Woning op erfpachtgrond met jaarlijkse canon."))
+        self.assertIn("• Leasehold ground rent", msg)
+
+    def test_bottom_line_with_and_without_cons(self):
+        msg = _format_listing_message(make_listing(
+            description=DESCRIPTION_PRO + " " + DESCRIPTION_CON))
+        self.assertRegex(msg, r"Bottom line: .* stand out, with .* "
+                              r"as the main trade-off\.")
+        msg = _format_listing_message(make_listing(description=DESCRIPTION_PRO))
+        self.assertRegex(msg, r"Bottom line: .* stand out, with no notable "
+                              r"trade-offs mentioned in the listing\.")
+        msg = _format_listing_message(make_listing(description=DESCRIPTION_CON))
+        self.assertNotIn("Bottom line:", msg)  # no pros -> no bottom line
+
+    def test_description_message_fits_media_caption(self):
+        msg = _format_listing_message(make_listing(
+            description=DESCRIPTION_PRO + " " + DESCRIPTION_CON))
+        self.assertTrue(_fits_telegram_caption(msg))
+
+
+# ---------------------------------------------------------------------------
 # Coherent delivery (mocked network)
 # ---------------------------------------------------------------------------
 
