@@ -217,6 +217,10 @@ minimum and includes:
 
 * bedrooms, neighborhood, price per m²
 * plot size, energy label, construction year
+* property features — garage, parking and garden — always shown, with
+  absence rendered as `No`
+* a more precise location: city and street (area/district and postal
+  code are not extracted and are never invented)
 * the match score with its breakdown (Phase 2 format)
 * **up to 3 property photos of the same listing**, delivered together
   with the text as one coherent Telegram media message: the
@@ -232,7 +236,9 @@ The notification text is a clean, metric-only list: every line follows
 kept exactly as provided by the listing. No Dutch property terminology
 is displayed: property type (e.g. `Eengezinswoning`), listing status
 (e.g. `Beschikbaar`) and ownership wording (`Eigendom`/`Erfpacht`) are
-omitted and are not replaced with invented English translations.
+omitted and are not replaced with invented English translations; other
+non-numeric values (garage/parking types) are converted to English at
+presentation level only.
 
 Fields that a listing does not expose are omitted from the message —
 values are never invented or shown as placeholders.

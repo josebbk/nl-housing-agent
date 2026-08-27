@@ -151,8 +151,8 @@ class TestMessageFormatting(unittest.TestCase):
         self.assertIn("📐 Size: 133 m² · €4,504/m²", msg)
         self.assertIn("🛏 Bedrooms: 3", msg)
         self.assertIn("⚡ Energy label: C", msg)
-        self.assertIn("📍 Location: Amsterdam", msg)
-        self.assertIn("🌳 Plot: 122 m²", msg)
+        self.assertIn("📍 Location: Amsterdam · Lambert Rimastraat", msg)
+        self.assertIn("📏 Plot: 122 m²", msg)
         self.assertIn("🏗 Year built: 1996", msg)
 
     def test_every_metric_line_has_emoji_name_and_colon(self):
@@ -196,8 +196,127 @@ class TestMessageFormatting(unittest.TestCase):
             year_built=None))
         self.assertNotIn("⚡", msg)
         self.assertNotIn("📍", msg)
-        self.assertNotIn("🌳", msg)
+        self.assertNotIn("📏", msg)
         self.assertNotIn("🏗", msg)
+
+
+# ---------------------------------------------------------------------------
+# Property features (Garage / Parking / Garden)
+# ---------------------------------------------------------------------------
+
+class TestPropertyFeatureLines(unittest.TestCase):
+    def test_garage_english_codes(self):
+        self.assertIn("🚗 Garage: Attached",
+                      _format_listing_message(make_listing(garage_type="attached")))
+        self.assertIn("🚗 Garage: Detached",
+                      _format_listing_message(make_listing(garage_type="detached")))
+        self.assertIn("🚗 Garage: Carport",
+                      _format_listing_message(make_listing(garage_type="carport")))
+
+    def test_garage_dutch_raw_values_mapped_to_english(self):
+        self.assertIn("🚗 Garage: Possible",
+                      _format_listing_message(make_listing(garage_type="Garage mogelijk")))
+        self.assertIn("🚗 Garage: Detached",
+                      _format_listing_message(make_listing(garage_type="Vrijstaande garage")))
+        self.assertIn("🚗 Garage: Attached",
+                      _format_listing_message(make_listing(garage_type="Inpandige garage")))
+
+    def test_garage_shows_no_when_missing_or_unrecognized(self):
+        msg = _format_listing_message(make_listing(garage_type=None))
+        self.assertIn("🚗 Garage: No", msg)
+        msg = _format_listing_message(make_listing(garage_type="Elk soort garage"))
+        self.assertIn("🚗 Garage: No", msg)
+
+    def test_parking_english_codes(self):
+        for raw, label in (("private", "Private"), ("carport", "Carport"),
+                           ("public", "Public"), ("paid", "Paid")):
+            self.assertIn(f"🅿️ Parking: {label}",
+                          _format_listing_message(make_listing(parking_type=raw)))
+
+    def test_parking_dutch_raw_values_mapped_to_english(self):
+        self.assertIn("🅿️ Parking: Private",
+                      _format_listing_message(make_listing(parking_type="Op eigen terrein")))
+        self.assertIn("🅿️ Parking: Paid",
+                      _format_listing_message(make_listing(parking_type="Betaald parkeren")))
+        self.assertIn("🅿️ Parking: Public",
+                      _format_listing_message(make_listing(parking_type="Openbaar parkeren")))
+        self.assertIn("🅿️ Parking: No",
+                      _format_listing_message(make_listing(parking_type="geen parkeergelegenheid")))
+
+    def test_parking_shows_no_when_missing(self):
+        msg = _format_listing_message(make_listing(parking_type=None))
+        self.assertIn("🅿️ Parking: No", msg)
+
+    def test_garden_yes_and_no(self):
+        msg = _format_listing_message(make_listing(garden_present=True))
+        self.assertIn("🌳 Garden: Yes", msg)
+        msg = _format_listing_message(make_listing(
+            garden_present=None, garden_size_m2=37))
+        self.assertIn("🌳 Garden: Yes", msg)
+        msg = _format_listing_message(make_listing(
+            garden_present=False, garden_size_m2=None))
+        self.assertIn("🌳 Garden: No", msg)
+        msg = _format_listing_message(make_listing(
+            garden_present=None, garden_size_m2=None))
+        self.assertIn("🌳 Garden: No", msg)
+
+    def test_features_ordered_after_year_built_before_score(self):
+        msg = _format_listing_message(make_listing(
+            garage_type="attached", parking_type="private", garden_present=True))
+        lines = msg.splitlines()
+        year_idx = next(i for i, l in enumerate(lines) if "Year built" in l)
+        garage_idx = next(i for i, l in enumerate(lines) if "Garage:" in l)
+        parking_idx = next(i for i, l in enumerate(lines) if "Parking:" in l)
+        garden_idx = next(i for i, l in enumerate(lines) if "Garden:" in l)
+        score_idx = next(i for i, l in enumerate(lines) if "Score:" in l)
+        self.assertTrue(year_idx < garage_idx < parking_idx < garden_idx < score_idx)
+
+
+# ---------------------------------------------------------------------------
+# Location construction
+# ---------------------------------------------------------------------------
+
+class TestLocationConstruction(unittest.TestCase):
+    def test_city_and_street_shown_in_order(self):
+        msg = _format_listing_message(make_listing())
+        self.assertIn("📍 Location: Amsterdam · Lambert Rimastraat", msg)
+
+    def test_street_omitted_when_no_house_number(self):
+        msg = _format_listing_message(make_listing(address="Open huis"))
+        self.assertIn("📍 Location: Amsterdam", msg)
+        self.assertNotIn("·", _format_listing_message(make_listing(
+            address="Open huis", neighborhood=None)).splitlines()[-1])
+
+    def test_location_omitted_without_neighborhood(self):
+        msg = _format_listing_message(make_listing(neighborhood=None))
+        self.assertNotIn("📍", msg)
+
+    def test_address_variants_strip_house_number(self):
+        for addr, street in (
+            ("Zeelandstraat 34-3", "Zeelandstraat"),
+            ("IJsselmeerstraat 80-A", "IJsselmeerstraat"),
+            ("Sam van Houtenstraat 197-E", "Sam van Houtenstraat"),
+            ("Van Woustraat 245-III", "Van Woustraat"),
+            ("Bos en Lommerplein 228", "Bos en Lommerplein"),
+        ):
+            msg = _format_listing_message(make_listing(address=addr))
+            self.assertIn(f"📍 Location: Amsterdam · {street}", msg)
+
+
+# ---------------------------------------------------------------------------
+# English-only non-numeric values
+# ---------------------------------------------------------------------------
+
+class TestEnglishOnlyValues(unittest.TestCase):
+    def test_energy_label_guard_hides_garbled_dutch(self):
+        garbled = ("Niet verplichtVerwarmingCv-ketelWarm water"
+                   "Cv-ketelCv-ketelGas gestookt combiketel, eigendom")
+        msg = _format_listing_message(make_listing(energy_label=garbled))
+        self.assertNotIn("⚡", msg)
+        msg = _format_listing_message(make_listing(energy_label="Niet verplicht"))
+        self.assertNotIn("⚡", msg)
+        msg = _format_listing_message(make_listing(energy_label="A+++"))
+        self.assertIn("⚡ Energy label: A+++", msg)
 
     def test_score_section_values_unchanged(self):
         msg = _format_listing_message(make_listing())

@@ -511,7 +511,7 @@ The confidence flag shows `"⚠ partial data ({missing criteria})"` when
 data is incomplete, and `Score: unavailable` when no scoring data is
 available.
 
-#### Current format (Task 7 — metric-only presentation)
+#### Current format (Task 8 — property features + English-only values)
 
 The notification message is a clean, metric-only list: every line
 follows `EMOJI + English metric name + ":" + value`, no Dutch property
@@ -526,9 +526,12 @@ notifications"). The format is:
 📐 Size: {living_area} m² · €{price_per_m2}/m²
 🛏 Bedrooms: {bedrooms}
 ⚡ Energy label: {energy_label}
-📍 Location: {neighborhood}
-🌳 Plot: {plot_size_m2} m²
+📍 Location: {city} · {street}
+📏 Plot: {plot_size_m2} m²
 🏗 Year built: {year_built}
+🚗 Garage: {value}
+🅿️ Parking: {value}
+🌳 Garden: Yes
 
 ⭐ Score: {score}/100
 ⚠️ Adjusted: {missing criteria} data unavailable
@@ -540,7 +543,7 @@ notifications"). The format is:
 🔗 {url}
 ```
 
-> **Superseded (Task 6):** the previous "Task 6" layout used
+> **Superseded (Task 7):** the previous "Task 6" layout used
 > metric lines without names/colons (e.g. `💰 €{price}`,
 > `🛏 {bedrooms} bedrooms · {property_type}`), a `✨` key-facts line
 > carrying plot/year/ownership/status, and bullet-list Best/Weakest
@@ -554,13 +557,37 @@ notifications"). The format is:
 * **Header** — the address on line 1, kept exactly as provided by the
   listing; no prose around it.
 * **Metric lines** — `💰 Price`, `📐 Size` (living area + price/m²),
-  `🛏 Bedrooms`, `⚡ Energy label`, `📍 Location` (neighborhood,
-  capitalized as presentation), `🌳 Plot`, `🏗 Year built`. Lines
-  whose only content would be missing fields are omitted entirely.
+  `🛏 Bedrooms`, `⚡ Energy label`, `📍 Location`, `📏 Plot`,
+  `🏗 Year built`. Lines whose only content would be missing fields
+  are omitted entirely.
+* **Property features** (Task 8) — `🚗 Garage`, `🅿️ Parking`,
+  `🌳 Garden` lines appear directly after `🏗 Year built` and before
+  the score section, always shown, with absence rendered as `No`:
+  * Garage/Parking stored values are either short English codes or
+    raw Dutch page text; both are converted to English at
+    presentation level in `notifier.py` (`_garage_value` /
+    `_parking_value`), mirroring the keyword classification of
+    `detail_scraper.py`/`scoring.py`. `garage mogelijk` shows as
+    `Possible`; missing, "no garage/parking" or unrecognized values
+    show as `No` (a missing `garage_type` is a confirmed negative —
+    Funda omits the garage section when a listing has no garage).
+  * Garden shows `Yes` when `garden_present` is true or a positive
+    `garden_size_m2` exists, otherwise `No`.
+* **Location** (Task 8) — `📍 Location` uses the available components
+  in the order City → Area/District → Street → Postal code. City comes
+  from `neighborhood` (capitalized); Street is derived from the
+  address by stripping the trailing house number and is omitted when
+  no house number can be identified (a street is never guessed).
+  Area/District and Postal code are not extracted by the project and
+  are never fabricated.
 * **No Dutch terminology** — property type (e.g. `Eengezinswoning`),
   listing status (e.g. `Beschikbaar`) and ownership wording
   (`Eigendom`/`Erfpacht`) are not displayed and are not replaced with
   invented English translations.
+* **English-only values** (Task 8) — the energy label is displayed
+  only when it matches the valid Funda label pattern (A–G with
+  optional `+`); garbled Dutch page text (a known detail-scraper
+  parsing edge case) is not shown.
 * **Score** — `⭐ Score: {score}/100` with bold score value; when the
   score is unavailable the existing behavior is preserved as
   `⭐ Score: unavailable`.
@@ -592,9 +619,12 @@ placeholder values:
 📐 Size: {living_area} m² · €{price_per_m2}/m²
 🛏 Bedrooms: {bedrooms}
 ⚡ Energy label: {energy_label}
-📍 Location: {neighborhood}
-🌳 Plot: {plot_size_m2} m²
+📍 Location: {city} · {street}
+📏 Plot: {plot_size_m2} m²
 🏗 Year built: {year_built}
+🚗 Garage: {value}
+🅿️ Parking: {value}
+🌳 Garden: Yes
 
 ⭐ Score: {score}/100
 ...
@@ -603,10 +633,13 @@ placeholder values:
 * **Price per m²** — computed strictly from the two required fields
   (`price / living_area_m2`); rendered only when both are present.
 * **Energy label** — its own `⚡ Energy label: …` line, only when
-  `energy_label` is non-null.
-* **Plot / Year built** — `🌳 Plot: … m²` and `🏗 Year built: …` lines
+  `energy_label` is non-null and matches the valid label pattern.
+* **Plot / Year built** — `📏 Plot: … m²` and `🏗 Year built: …` lines
   appear only when the respective field is non-null (`plot_size_m2`,
   `year_built`).
+* **Property features** — `🚗 Garage`, `🅿️ Parking`, `🌳 Garden`
+  lines are always shown; Garage/Parking values are English and absence
+  renders as `No` (see the metric-only format rules above).
 * **Property type, status and ownership** — not displayed (Dutch
   terminology, see the metric-only format rules above).
 * The score sections and URL line are unchanged.
