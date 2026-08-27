@@ -56,14 +56,38 @@ _OPTIONAL_FILTER_KEYS = (
     "plot_size_min",
     "plot_size_max",
     "property_type",
-    "energy_label_min",
-    "energy_label_max",
+    "energy_labels",
     "transaction_type",
     "radius_km",
     "construction_type",
+    "construction_periods",
+    "garden",
+    "garden_size_min",
+    "availability",
+    "sort",
 )
 
 _FILTER_KEYS = _REQUIRED_FILTER_KEYS + _OPTIONAL_FILTER_KEYS
+
+# The energy_labels default order (A++++, A+++, A++, A+, A, B, C, D, A+++++)
+# is preserved exactly as it appeared in the authoritative source URL, not
+# sorted ordinally. This ordering is unusual (A+++++ appears last, after D)
+# and should be investigated later to confirm whether Funda's search endpoint
+# is actually order-sensitive, or whether this was an artifact of how the URL
+# was originally captured. Do not silently reorder it.
+
+# Human-readable construction-period keys (used in ``config/filters.json``)
+# mapped to Funda's internal parameter values. The URL builder (scraper.py)
+# consumes this map to translate the configured keys into
+# ``construction_period=<code>`` parameters.
+CONSTRUCTION_PERIOD_MAP = {
+    "1971-1980": "from_1971_to_1980",
+    "1981-1990": "from_1981_to_1990",
+    "1991-2000": "from_1991_to_2000",
+    "2001-2010": "from_2001_to_2010",
+    "2011-2020": "from_2011_to_2020",
+    "after_2020": "after_2020",
+}
 
 
 def _flatten_filter_file(raw: dict, path: Path) -> dict:
@@ -146,11 +170,15 @@ class FilterConfig:
     plot_size_min: int | None = None
     plot_size_max: int | None = None
     property_type: str | None = None
-    energy_label_min: str | None = None
-    energy_label_max: str | None = None
+    energy_labels: list[str] | None = None
     transaction_type: str | None = None
     radius_km: int | None = None
     construction_type: str | None = None
+    construction_periods: list[str] | None = None
+    garden: bool | None = None
+    garden_size_min: int | None = None
+    availability: str | None = None
+    sort: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("price_min", "price_max", "bedrooms_min", "living_area_min"):
@@ -208,22 +236,18 @@ class FilterConfig:
                     f"got {self.property_type!r}."
                 )
 
-        if self.energy_label_min is not None:
-            if not isinstance(self.energy_label_min, str) or not self.energy_label_min.strip():
+        if self.energy_labels is not None:
+            if not isinstance(self.energy_labels, list) or not self.energy_labels:
                 raise ValueError(
-                    "energy_label_min must be a non-empty string or None, "
-                    f"got {self.energy_label_min!r}."
+                    "energy_labels must be a non-empty list of strings or None, "
+                    f"got {self.energy_labels!r}."
                 )
-            # Follow the project convention (scoring.py): uppercase-normalized.
-            object.__setattr__(self, "energy_label_min", self.energy_label_min.strip().upper())
-
-        if self.energy_label_max is not None:
-            if not isinstance(self.energy_label_max, str) or not self.energy_label_max.strip():
-                raise ValueError(
-                    "energy_label_max must be a non-empty string or None, "
-                    f"got {self.energy_label_max!r}."
-                )
-            object.__setattr__(self, "energy_label_max", self.energy_label_max.strip().upper())
+            for label in self.energy_labels:
+                if not isinstance(label, str) or not label.strip():
+                    raise ValueError(
+                        "energy_labels must contain only non-empty strings, "
+                        f"got {label!r}."
+                    )
 
         if self.transaction_type is not None:
             if not isinstance(self.transaction_type, str) or not self.transaction_type.strip():
@@ -239,6 +263,10 @@ class FilterConfig:
                 )
             object.__setattr__(self, "transaction_type", normalized)
 
+        # radius_km maps to the standalone ``radius_search={radius_km}`` query
+        # parameter (not an embedded value inside ``selected_area``, which must
+        # remain a plain area slug like "amsterdam"). The URL builder in
+        # scraper.py is responsible for emitting ``radius_search``.
         if self.radius_km is not None:
             if type(self.radius_km) is not int:
                 raise ValueError(
@@ -263,6 +291,45 @@ class FilterConfig:
                     f"got {self.construction_type!r}."
                 )
             object.__setattr__(self, "construction_type", normalized)
+
+        if self.construction_periods is not None:
+            if not isinstance(self.construction_periods, list) or not self.construction_periods:
+                raise ValueError(
+                    "construction_periods must be a non-empty list of strings "
+                    f"or None, got {self.construction_periods!r}."
+                )
+            invalid = [p for p in self.construction_periods if p not in CONSTRUCTION_PERIOD_MAP]
+            if invalid:
+                raise ValueError(
+                    "construction_periods contains invalid key(s): "
+                    f"{', '.join(repr(p) for p in invalid)}. Valid options: "
+                    f"{', '.join(sorted(CONSTRUCTION_PERIOD_MAP))}."
+                )
+
+        if self.garden is not None and type(self.garden) is not bool:
+            raise ValueError(f"garden must be a boolean or None, got {self.garden!r}.")
+
+        if self.garden_size_min is not None:
+            if type(self.garden_size_min) is not int:
+                raise ValueError(
+                    f"garden_size_min must be an integer or None, got {self.garden_size_min!r}."
+                )
+            if self.garden_size_min < 0:
+                raise ValueError(
+                    f"garden_size_min must not be negative, got {self.garden_size_min!r}."
+                )
+            if self.garden is not True:
+                raise ValueError(
+                    "garden_size_min requires garden=true (exterior_space_type=garden); "
+                    f"got garden={self.garden!r} with garden_size_min={self.garden_size_min!r}."
+                )
+
+        for name in ("availability", "sort"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(
+                    f"{name} must be a non-empty string or None, got {value!r}."
+                )
 
     @classmethod
     def from_file(cls, path: Path | str | None = None) -> "FilterConfig":
@@ -310,11 +377,15 @@ class FilterConfig:
             plot_size_min=flat.get("plot_size_min"),
             plot_size_max=flat.get("plot_size_max"),
             property_type=flat.get("property_type"),
-            energy_label_min=flat.get("energy_label_min"),
-            energy_label_max=flat.get("energy_label_max"),
+            energy_labels=flat.get("energy_labels"),
             transaction_type=flat.get("transaction_type"),
             radius_km=flat.get("radius_km"),
             construction_type=flat.get("construction_type"),
+            construction_periods=flat.get("construction_periods"),
+            garden=flat.get("garden"),
+            garden_size_min=flat.get("garden_size_min"),
+            availability=flat.get("availability"),
+            sort=flat.get("sort"),
         )
 
 

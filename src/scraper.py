@@ -7,8 +7,8 @@ Returns structured listing dicts ready for storage.py insertion.
 Does NOT import storage.py or send notifications — orchestration belongs
 in main.py.
 
-Working filtered search URL (discovered 2025-08-11):
-    https://www.funda.nl/zoeken/koop?selected_area=amsterdam&price=550000-750000&floor_area=100-&bedrooms=3-
+Working filtered search URL (authoritative, 2025-08-26):
+    https://www.funda.nl/zoeken/koop?selected_area=amsterdam&radius_search=10&price=550000-750000&availability=available&floor_area=100-&bedrooms=3-&energy_label=A%2B%2B%2B%2B,A%2B%2B%2B,A%2B%2B,A%2B,A,B,C,D,A%2B%2B%2B%2B%2B&exterior_space_type=garden&exterior_space_garden_size=70-&construction_period=from_1981_to_1990,from_1991_to_2000,from_2001_to_2010,from_2011_to_2020,after_2020,from_1971_to_1980&sort=publish_date_utc_desc
 
 Filter input IDs (for programmatic filter application via UI):
     #price_from, #price_to
@@ -89,32 +89,45 @@ def build_search_url(
     rooms_max: Optional[int] = None,
     radius_km: Optional[int] = None,
     construction_type: Optional[str] = None,
+    energy_labels: Optional[list[str]] = None,
+    construction_periods: Optional[list[str]] = None,
+    garden: Optional[bool] = None,
+    garden_size_min: Optional[int] = None,
+    availability: Optional[str] = None,
+    sort: Optional[str] = None,
     page: int = 1,
 ) -> str:
     """Build a Funda search URL with the given filters.
 
     Funda URL format (discovered by loading the site with Playwright):
         https://www.funda.nl/zoeken/{offering_type}?selected_area={area}
+        &radius_search={radius}      (optional: standalone search radius)
         &price={min}-{max}
-&publication_date={n}       (optional: 1, 3, 5, 10, or 30)
+        &publication_date={n}       (optional: 1, 3, 5, 10, or 30)
+        &availability={value}       (optional free string)
         &floor_area={min}-{max}
         &bedrooms={min}-{max}
         &rooms={min}-{max}
+        &construction_type={existing|new}
+        &energy_label={enc,enc,...} (each label percent-encoded, comma-joined)
+        &exterior_space_type=garden (only when garden is True)
+        &exterior_space_garden_size={min}-  (only when garden_size_min is set)
+        &construction_period={code,code,...} (mapped Funda codes)
+        &sort={value}               (optional free string)
         &page={n}
 
-    When ``radius_km`` is set, Funda encodes the radius inside the location
-    value as a JSON array: ``selected_area=["{area},{radius}km"]``. The whole
-    value is URL-encoded so quotes/brackets/comma are safe for any HTTP client.
-    ``construction_type`` is a categorical exact-match parameter (``existing``
-    or ``new``).
+    ``selected_area`` is always a plain area slug (e.g. ``amsterdam``) and is
+    never combined with the radius. When ``radius_km`` is set it is emitted as
+    its own ``radius_search`` parameter. ``energy_labels`` are percent-encoded
+    individually (so ``+`` becomes ``%2B``) and joined with a literal comma,
+    preserving the configured order verbatim.
     """
     base = f"https://www.funda.nl/zoeken/{offering_type}"
 
+    params = [f"selected_area={area}"]
+
     if radius_km is not None:
-        location = f'["{area},{radius_km}km"]'
-        params = [f"selected_area={urllib.parse.quote(location, safe='')}"]
-    else:
-        params = [f"selected_area={area}"]
+        params.append(f"radius_search={radius_km}")
 
     if price_min is not None or price_max is not None:
         p_min = price_min if price_min is not None else ""
@@ -128,6 +141,9 @@ def build_search_url(
                 f"{sorted(_ALLOWED_PUBLICATION_DATES)}, got {publication_date_days}"
             )
         params.append(f"publication_date={publication_date_days}")
+
+    if availability is not None:
+        params.append(f"availability={availability}")
 
     fp = _range_param("floor_area", floor_area_min, floor_area_max)
     if fp is not None:
@@ -143,6 +159,24 @@ def build_search_url(
 
     if construction_type is not None:
         params.append(f"construction_type={construction_type}")
+
+    if energy_labels is not None:
+        encoded = ",".join(
+            urllib.parse.quote(label, safe="") for label in energy_labels
+        )
+        params.append(f"energy_label={encoded}")
+
+    if garden is True:
+        params.append("exterior_space_type=garden")
+
+    if garden_size_min is not None:
+        params.append(f"exterior_space_garden_size={garden_size_min}-")
+
+    if construction_periods is not None:
+        params.append(f"construction_period={','.join(construction_periods)}")
+
+    if sort is not None:
+        params.append(f"sort={sort}")
 
     params.append(f"page={page}")
 
@@ -421,6 +455,12 @@ def scrape_funda(
     rooms_max: Optional[int] = None,
     radius_km: Optional[int] = None,
     construction_type: Optional[str] = None,
+    energy_labels: Optional[list[str]] = None,
+    construction_periods: Optional[list[str]] = None,
+    garden: Optional[bool] = None,
+    garden_size_min: Optional[int] = None,
+    availability: Optional[str] = None,
+    sort: Optional[str] = None,
     max_pages: int = 5,
     headless: bool = True,
 ) -> list[dict]:
@@ -454,6 +494,19 @@ def scrape_funda(
         Search radius in kilometres around the area (None = no radius).
     construction_type : str or None
         Exact construction type: "existing" or "new" (None = no restriction).
+    energy_labels : list[str] or None
+        Ordered energy labels passed to Funda verbatim (None = no restriction).
+    construction_periods : list[str] or None
+        Funda construction-period codes (already mapped from config), joined
+        with commas (None = no restriction).
+    garden : bool or None
+        When True, adds ``exterior_space_type=garden``.
+    garden_size_min : int or None
+        Minimum garden size in m²; adds ``exterior_space_garden_size={min}-``.
+    availability : str or None
+        Free-string ``availability`` value (None = no restriction).
+    sort : str or None
+        Free-string ``sort`` value (None = no restriction).
     max_pages : int
         Maximum pages to scrape (default 5, ~150 listings).
     headless : bool
@@ -506,6 +559,12 @@ def scrape_funda(
                 rooms_max=rooms_max,
                 radius_km=radius_km,
                 construction_type=construction_type,
+                energy_labels=energy_labels,
+                construction_periods=construction_periods,
+                garden=garden,
+                garden_size_min=garden_size_min,
+                availability=availability,
+                sort=sort,
                 page=1,
             )
             logger.info("Fetching page 1 to detect total listing count: %s", page1_url)
@@ -572,6 +631,12 @@ def scrape_funda(
                     rooms_max=rooms_max,
                     radius_km=radius_km,
                     construction_type=construction_type,
+                    energy_labels=energy_labels,
+                    construction_periods=construction_periods,
+                    garden=garden,
+                    garden_size_min=garden_size_min,
+                    availability=availability,
+                    sort=sort,
                     page=page_num,
                 )
 

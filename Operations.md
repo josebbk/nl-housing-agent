@@ -177,11 +177,15 @@ read without touching source code:
         "plot_size_min": null,
         "plot_size_max": null,
         "property_type": null,
-        "energy_label_min": null,
-        "energy_label_max": null,
+        "energy_labels": ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"],
         "transaction_type": null,
-        "radius_km": null,
-        "construction_type": null
+        "radius_km": 10,
+        "construction_type": null,
+        "construction_periods": ["1971-1980", "1981-1990", "1991-2000", "2001-2010", "2011-2020", "after_2020"],
+        "garden": true,
+        "garden_size_min": 70,
+        "availability": "available",
+        "sort": "publish_date_utc_desc"
     }
 }
 ```
@@ -192,30 +196,45 @@ read without touching source code:
 
 Each key controls the housing search criteria:
 
-| Key                  | Type       | Default | Meaning                                     |
-| -------------------- | ---------- | ------- | ------------------------------------------- |
-| `price_min`          | int        | 550000  | Minimum asking price (€)                    |
-| `price_max`          | int        | 750000  | Maximum asking price (€)                    |
-| `bedrooms_min`       | int        | 3       | Minimum bedrooms                            |
-| `bedrooms_max`       | int / null | none    | Maximum bedrooms                            |
-| `living_area_min`    | int        | 100     | Minimum living area (m²)                    |
-| `living_area_max`    | int / null | none    | Maximum living area (m²)                    |
-| `rooms_min`          | int / null | none    | Minimum total rooms                         |
-| `rooms_max`          | int / null | none    | Maximum total rooms                         |
-| `plot_size_min`      | int / null | none    | Minimum plot size (m²)                      |
-| `plot_size_max`      | int / null | none    | Maximum plot size (m²)                      |
-| `property_type`      | str / null | none    | Required property type, e.g. `appartement`  |
-| `energy_label_min`   | str / null | none    | Minimum energy label, e.g. `B`              |
-| `energy_label_max`   | str / null | none    | Maximum energy label, e.g. `C`              |
-| `transaction_type`   | str / null | none    | `koop` (for sale) or `huur` (rent)          |
-| `radius_km`          | int / null | none    | Search radius (km) around the area          |
-| `construction_type`  | str / null | none    | Exact construction type: `existing`/`new`   |
+| Key                    | Type       | Default        | Meaning                                        |
+| ---------------------- | ---------- | -------------- | ---------------------------------------------- |
+| `price_min`            | int        | 550000         | Minimum asking price (€)                       |
+| `price_max`            | int        | 750000         | Maximum asking price (€)                       |
+| `bedrooms_min`         | int        | 3              | Minimum bedrooms                               |
+| `bedrooms_max`         | int / null | none           | Maximum bedrooms                               |
+| `living_area_min`      | int        | 100            | Minimum living area (m²)                       |
+| `living_area_max`      | int / null | none           | Maximum living area (m²)                       |
+| `rooms_min`            | int / null | none           | Minimum total rooms                            |
+| `rooms_max`            | int / null | none           | Maximum total rooms                            |
+| `plot_size_min`        | int / null | none           | Minimum plot size (m²)                         |
+| `plot_size_max`        | int / null | none           | Maximum plot size (m²)                         |
+| `property_type`        | str / null | none           | Required property type, e.g. `appartement`     |
+| `energy_labels`        | list / null | none          | Ordered energy labels sent to Funda verbatim   |
+| `transaction_type`     | str / null | none           | `koop` (for sale) or `huur` (rent)             |
+| `radius_km`            | int / null | none           | Search radius (km); emitted as `radius_search` |
+| `construction_type`    | str / null | none           | Exact construction type: `existing`/`new`      |
+| `construction_periods` | list / null | none          | Human-readable build-year periods (mapped)     |
+| `garden`               | bool / null | none           | `true` adds `exterior_space_type=garden`       |
+| `garden_size_min`      | int / null | none           | Minimum garden size (m²); requires `garden`    |
+| `availability`         | str / null | none           | Free-string `availability` value               |
+| `sort`                 | str / null | none           | Free-string `sort` value                       |
+
+> **Superseded:** the `energy_label_min` / `energy_label_max` keys were
+> removed and replaced by the single ordered `energy_labels` list. The
+> `energy_labels` default order (`A++++, A+++, A++, A+, A, B, C, D,
+> A+++++`) is preserved exactly as it appeared in the authoritative source
+> URL, not sorted ordinally — do not silently reorder it.
 
 The `null` optional values mean "no preference filter". Missing keys fall
 back to the Phase 1 defaults (€550,000–€750,000, ≥3 bedrooms, ≥100 m²).
 Ranged filters accept `_min`/`_max` pairs; a `null` bound leaves that side
-open-ended. `rooms_min`/`rooms_max`, `radius_km`, and `construction_type` are
-applied to the Funda search URL only (not the local matching query).
+open-ended. `rooms_min`/`rooms_max`, `radius_km`, `construction_type`,
+`energy_labels`, `construction_periods`, `garden`, `garden_size_min`,
+`availability`, and `sort` are applied to the Funda search URL only (not the
+local matching query). `radius_km` is emitted as its own `radius_search`
+parameter; `selected_area` stays a plain area slug. `construction_periods`
+uses human-readable keys that `src/config.py` maps to Funda's internal codes
+via `CONSTRUCTION_PERIOD_MAP`.
 Invalid values or unknown keys cause the run to fail loudly rather than being
 silently coerced. Each key must appear in its own section (`required` for the
 four base criteria, `optional` for everything else): a key placed in the

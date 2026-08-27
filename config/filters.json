@@ -13,10 +13,14 @@
         "plot_size_min": null,
         "plot_size_max": null,
         "property_type": null,
-        "energy_label_min": null,
-        "energy_label_max": null,
+        "energy_labels": ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"],
         "transaction_type": null,
-        "radius_km": null,
-        "construction_type": null
+        "radius_km": 10,
+        "construction_type": null,
+        "construction_periods": ["1971-1980", "1981-1990", "1991-2000", "2001-2010", "2011-2020", "after_2020"],
+        "garden": true,
+        "garden_size_min": 70,
+        "availability": "available",
+        "sort": "publish_date_utc_desc"
     }
 }
