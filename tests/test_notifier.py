@@ -221,11 +221,11 @@ class TestPropertyFeatureLines(unittest.TestCase):
         self.assertIn("🚗 Garage: Attached",
                       _format_listing_message(make_listing(garage_type="Inpandige garage")))
 
-    def test_garage_line_omitted_when_missing_or_unrecognized(self):
+    def test_garage_shows_no_when_missing_or_unrecognized(self):
         msg = _format_listing_message(make_listing(garage_type=None))
-        self.assertNotIn("🚗", msg)
+        self.assertIn("🚗 Garage: No", msg)
         msg = _format_listing_message(make_listing(garage_type="Elk soort garage"))
-        self.assertNotIn("🚗", msg)
+        self.assertIn("🚗 Garage: No", msg)
 
     def test_parking_english_codes(self):
         for raw, label in (("private", "Private"), ("carport", "Carport"),
@@ -243,11 +243,11 @@ class TestPropertyFeatureLines(unittest.TestCase):
         self.assertIn("🅿️ Parking: No",
                       _format_listing_message(make_listing(parking_type="geen parkeergelegenheid")))
 
-    def test_parking_line_omitted_when_missing(self):
+    def test_parking_shows_no_when_missing(self):
         msg = _format_listing_message(make_listing(parking_type=None))
-        self.assertNotIn("🅿️", msg)
+        self.assertIn("🅿️ Parking: No", msg)
 
-    def test_garden_yes_only_when_present(self):
+    def test_garden_yes_and_no(self):
         msg = _format_listing_message(make_listing(garden_present=True))
         self.assertIn("🌳 Garden: Yes", msg)
         msg = _format_listing_message(make_listing(
@@ -255,10 +255,10 @@ class TestPropertyFeatureLines(unittest.TestCase):
         self.assertIn("🌳 Garden: Yes", msg)
         msg = _format_listing_message(make_listing(
             garden_present=False, garden_size_m2=None))
-        self.assertNotIn("🌳", msg)
+        self.assertIn("🌳 Garden: No", msg)
         msg = _format_listing_message(make_listing(
             garden_present=None, garden_size_m2=None))
-        self.assertNotIn("🌳", msg)
+        self.assertIn("🌳 Garden: No", msg)
 
     def test_features_ordered_after_year_built_before_score(self):
         msg = _format_listing_message(make_listing(
