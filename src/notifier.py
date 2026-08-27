@@ -138,6 +138,120 @@ def _street_from_address(address: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Pros / Cons / Bottom line extraction from the property description
+# ---------------------------------------------------------------------------
+# The detail scraper extracts the raw Dutch description text. A bullet is
+# emitted ONLY when its Dutch phrase is actually found in that text —
+# nothing is fabricated. Simple negations ("niet/geen/zonder ...") suppress
+# a match.
+
+_PRO_PATTERNS: list[tuple[str, str]] = [
+    ("instapklaar", "Move-in ready condition"),
+    ("gerenoveerd", "Recently renovated"),
+    ("vernieuwd", "Recently updated"),
+    ("nieuwe keuken", "New kitchen"),
+    ("nieuwe badkamer", "New bathroom"),
+    ("uitbouw", "Extension added"),
+    ("aanbouw", "Extension added"),
+    ("vloerverwarming", "Underfloor heating"),
+    ("dakterras", "Rooftop terrace"),
+    ("balkon", "Balcony"),
+    ("veel licht", "Lots of natural light"),
+    ("zonnig", "Bright and sunny"),
+    ("vrij uitzicht", "Unobstructed views"),
+    ("mooi uitzicht", "Nice views"),
+    ("hr++", "HR++ glazing"),
+    ("dubbel glas", "Double glazing"),
+    ("goed onderhouden", "Well-maintained condition"),
+    ("rustig", "Quiet surroundings"),
+    ("stille straat", "Quiet street"),
+    ("woonstraat", "Quiet residential street"),
+    ("monumentaal", "Characterful architecture"),
+    ("jaren 30", "1930s character"),
+    ("berging", "Storage shed"),
+    ("schuur", "Garden shed"),
+    ("luxe", "Luxurious finish"),
+    ("hoogwaardige afwerking", "High-quality finish"),
+    ("nieuw dak", "New roof"),
+    ("hoge plafonds", "High ceilings"),
+    ("vrijstaand", "Detached"),
+    ("mogelijkheid tot", "Flexible layout — extra room possible"),
+    ("achterom", "Rear access"),
+    ("achtertuin op het westen", "West-facing back garden"),
+    ("tuin op het zuiden", "South-facing garden"),
+    ("open keuken", "Open-plan kitchen"),
+    ("aan het water", "Waterfront"),
+    ("eigen oprit", "Private driveway"),
+    ("centrum op loopafstand", "Walking distance to the centre"),
+    ("nabij winkels", "Close to shops"),
+    ("openbaar vervoer", "Close to public transport"),
+    ("nabij het park", "Near the park"),
+    ("aan het park", "Park-side location"),
+]
+
+_CON_PATTERNS: list[tuple[str, str]] = [
+    ("kluswoning", "Renovation needed (fixer-upper)"),
+    ("opknapper", "Refurbishment needed"),
+    ("te moderniseren", "Modernisation needed"),
+    ("moderniseren", "Modernisation needed"),
+    ("achterstallig onderhoud", "Maintenance backlog"),
+    ("onderhoud nodig", "Maintenance needed"),
+    ("verbouwing nodig", "Renovation needed"),
+    ("verouderd", "Dated fixtures"),
+    ("gedateerd", "Dated interior"),
+    ("drukke weg", "Busy road nearby"),
+    ("verkeersdrukte", "Traffic noise"),
+    ("gehorig", "Noise-prone construction"),
+    ("geen lift", "No elevator"),
+    ("kleine keuken", "Small kitchen"),
+    ("kleine badkamer", "Compact bathroom"),
+    ("kleine slaapkamers", "Small bedrooms"),
+    ("geen berging", "No storage space"),
+    ("rijksmonument", "Listed building (restrictions apply)"),
+    ("gemeentelijk monument", "Locally listed building"),
+    ("asbest", "Asbestos present"),
+]
+
+# Fixed-width negative lookbehind so negated phrases do not match.
+_NEGATION_GUARD = r"(?<!niet )(?<!geen )(?<!zonder )"
+
+_MAX_BULLETS = 5
+
+
+def _extract_bullets(description: str, patterns: list[tuple[str, str]]) -> list[str]:
+    """Return English bullets for Dutch phrases found in the description."""
+    if not description:
+        return []
+    bullets: list[str] = []
+    seen: set[str] = set()
+    text = description.lower()
+    for keyword, bullet in patterns:
+        if len(bullets) >= _MAX_BULLETS:
+            break
+        pattern = re.compile(_NEGATION_GUARD + re.escape(keyword), re.IGNORECASE)
+        if pattern.search(text) and bullet not in seen:
+            seen.add(bullet)
+            bullets.append(bullet)
+    return bullets
+
+
+def _bottom_line(pros: list[str], cons: list[str]) -> str | None:
+    """One concise summary sentence from the extracted bullets."""
+    if not pros:
+        return None
+    strength = " and ".join(bullet.rstrip(".") for bullet in pros[:2])
+    if cons:
+        return (
+            f"Bottom line: {strength} stand out, with "
+            f"{cons[0].rstrip('.')} as the main trade-off."
+        )
+    return (
+        f"Bottom line: {strength} stand out, with no notable "
+        f"trade-offs mentioned in the listing."
+    )
+
+
 def _fits_telegram_caption(text: str) -> bool:
     """Return True when ``text`` fits Telegram's media caption limit."""
     return len(text) <= _CAPTION_SAFETY_LIMIT
@@ -201,9 +315,8 @@ def _format_listing_message(listing: dict) -> str:
     * every metric line follows ``EMOJI + English metric name + ":" +
       value``;
     * missing metrics are omitted — never invented. "Number of stories"
-      and Pros/Cons/Bottom line require data the project does not
-      extract (number of floors, property description text) and are
-      therefore omitted rather than fabricated;
+      is omitted because the project does not extract the number of
+      floors;
     * price-per-m² is computed only from the two required fields
       (price, living_area_m2);
     * non-numeric values are English; raw Dutch source terminology is
@@ -211,7 +324,11 @@ def _format_listing_message(listing: dict) -> str:
     * the address is kept exactly as provided; Location combines the
       available components in the order City → Area/District → Street →
       Postal code (Area/District and Postal code are never invented)
-      and carries the Funda link.
+      and carries the Funda link;
+    * when the listing carries the extracted description text
+      (detail_scraper ``description`` field), 🟢 Pros / 🔴 Cons /
+      Bottom line sections are generated from phrases actually present
+      in that text — never fabricated.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -274,6 +391,37 @@ def _format_listing_message(listing: dict) -> str:
     parts.append(
         f"\U0001f17f\ufe0f Parking: {_parking_value(listing.get('parking_type'))}"
     )
+
+    # --- Pros / Cons / Bottom line from the property description ---
+    # Only emitted when the listing carries the extracted description
+    # text; each bullet corresponds to a Dutch phrase actually present.
+    description = listing.get("description")
+    if description:
+        pros = _extract_bullets(description, _PRO_PATTERNS)
+        cons = _extract_bullets(description, _CON_PATTERNS)
+        desc_lower = description.lower()
+        if (
+            "erfpacht" in desc_lower
+            and "afgekocht" not in desc_lower
+            and "Leasehold ground rent" not in cons
+            and len(cons) < _MAX_BULLETS
+        ):
+            cons.append("Leasehold ground rent")
+        bottom_line = _bottom_line(pros, cons)
+        if pros or cons or bottom_line:
+            parts.append("")
+            if pros:
+                parts.append("\U0001f7e2 Pros:")
+                for bullet in pros:
+                    parts.append(f"\u2022 {bullet}")
+            if cons:
+                parts.append("")
+                parts.append("\U0001f534 Cons:")
+                for bullet in cons:
+                    parts.append(f"\u2022 {bullet}")
+            if bottom_line:
+                parts.append("")
+                parts.append(bottom_line)
 
     return "\n".join(parts)
 
