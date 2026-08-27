@@ -217,11 +217,10 @@ minimum and includes:
 
 * bedrooms, neighborhood, price per m²
 * plot size, energy label, construction year
-* property features — garage, parking and garden — always shown, with
-  absence rendered as `No`
+* garden area and parking (always shown, values in English)
 * a more precise location: city and street (area/district and postal
-  code are not extracted and are never invented)
-* the match score with its breakdown (Phase 2 format)
+  code are not extracted and are never invented), with the Funda link
+  inline on the Location line
 * **up to 3 property photos of the same listing**, delivered together
   with the text as one coherent Telegram media message: the
   notification text rides as the caption of the photo (or photo
@@ -230,18 +229,24 @@ minimum and includes:
   notification is never withheld because images are missing (it
   degrades to a text-only message).
 
-The notification text is a clean, metric-only list: every line follows
+The notification text follows the owner-approved template: the bold
+address as title, then metric-only lines, each following
 `EMOJI + English metric name + ":" + value` (e.g. `💰 Price: €599,000`,
-`📐 Size: 133 m² · €4,504/m²`, `⭐ Score: unavailable`). The address is
+`🏠 Living area Size: 133 m² · €4,504/m²`, `🅿️ Parking: Available
+(Parkeervergunning)`). The match score is **not displayed** (score
+calculation and score-based logic remain unchanged). The address is
 kept exactly as provided by the listing. No Dutch property terminology
-is displayed: property type (e.g. `Eengezinswoning`), listing status
-(e.g. `Beschikbaar`) and ownership wording (`Eigendom`/`Erfpacht`) are
-omitted and are not replaced with invented English translations; other
-non-numeric values (garage/parking types) are converted to English at
-presentation level only.
+is displayed outside parentheses: property type (e.g.
+`Eengezinswoning`), listing status (e.g. `Beschikbaar`) and ownership
+wording (`Eigendom`/`Erfpacht`) are omitted and are not replaced with
+invented English translations; other non-numeric values (parking
+types) are converted to English at presentation level, keeping the
+original Dutch term in parentheses where the scraped value is Dutch.
 
 Fields that a listing does not expose are omitted from the message —
-values are never invented or shown as placeholders.
+values are never invented or shown as placeholders. "Number of stories"
+and Pros/Cons/Bottom line sections are omitted because the project does
+not extract the number of floors or the property description text.
 
 ---
 

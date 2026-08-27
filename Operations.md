@@ -906,14 +906,15 @@ additional verification steps:
    * scores fall in the expected 0–100 range
 
 2. **Confidence flag on missing neighborhood data** — confirm the
-   confidence flag appears correctly on listings where
+   confidence flag is stored correctly on listings where
    `neighborhood_avg_price_m2` is `None` (confirmed absent on some real
-   listings). The notification should show
-   `"⚠️ Adjusted: Neighborhood data unavailable"`
-   and the database should store `score_confidence = "partial"`.
+   listings). The database should store `score_confidence = "partial"`
+   (the score itself is no longer displayed in the Telegram
+   notification).
 
 3. **Live run** — a real run with notifications enabled, confirming the
-   score section renders correctly in the Telegram message.
+   approved template renders correctly in the Telegram message (score
+   must not appear).
 
 Only after all three steps pass is the scoring feature considered
 operationally verified.
