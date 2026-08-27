@@ -169,7 +169,7 @@ class TestMessageFormatting(unittest.TestCase):
     def test_every_metric_line_has_emoji_name_and_colon(self):
         msg = _format_listing_message(make_listing())
         metric_lines = [
-            line for line in msg.splitlines()
+            line for line in msg.split("🟢 Pros:")[0].splitlines()
             if line and "<b>" not in line
         ]
         self.assertTrue(metric_lines)
@@ -186,9 +186,8 @@ class TestMessageFormatting(unittest.TestCase):
         self.assertNotIn("Breakdown", msg)
         self.assertNotIn("Adjusted", msg)
 
-    def test_garage_is_not_displayed(self):
+    def test_garage_metric_line_is_not_displayed(self):
         msg = _format_listing_message(make_listing(garage_type="attached"))
-        self.assertNotIn("Garage", msg)
         self.assertNotIn("🚗", msg)
 
     def test_no_dutch_property_terminology(self):
@@ -348,11 +347,20 @@ DESCRIPTION_CON = (
 
 
 class TestProsConsBottomLine(unittest.TestCase):
-    def test_sections_omitted_without_description(self):
+    def test_sections_always_present_even_without_description(self):
         msg = _format_listing_message(make_listing())
-        self.assertNotIn("🟢 Pros:", msg)
-        self.assertNotIn("🔴 Cons:", msg)
-        self.assertNotIn("Bottom line:", msg)
+        self.assertIn("🟢 Pros:", msg)
+        self.assertIn("🔴 Cons:", msg)
+        self.assertIn("Bottom line:", msg)
+
+    def test_metric_derived_bullets_without_description(self):
+        msg = _format_listing_message(make_listing())
+        # fixture: 133 m2, built 1996, price 599000, no garage/parking data
+        self.assertIn("• Generous living area", msg)
+        self.assertIn("• Relatively modern construction (built 1996)", msg)
+        self.assertIn("• Priced at the lower end of your search range", msg)
+        self.assertIn("• No garage", msg)
+        self.assertIn("• No dedicated parking mentioned", msg)
 
     def test_pros_extracted_only_from_present_phrases(self):
         msg = _format_listing_message(make_listing(description=DESCRIPTION_PRO))
@@ -365,7 +373,6 @@ class TestProsConsBottomLine(unittest.TestCase):
         # phrases NOT in the description must not appear
         self.assertNotIn("New kitchen", msg)
         self.assertNotIn("Rooftop terrace", msg)
-        self.assertNotIn("🔴 Cons:", msg)
 
     def test_cons_extracted_only_from_present_phrases(self):
         msg = _format_listing_message(make_listing(description=DESCRIPTION_CON))
@@ -376,7 +383,6 @@ class TestProsConsBottomLine(unittest.TestCase):
         self.assertIn("• Compact bathroom", msg)
         self.assertIn("• Renovation needed", msg)
         self.assertNotIn("Busy road nearby", msg)
-        self.assertNotIn("🟢 Pros:", msg)
 
     def test_bullets_capped_at_five(self):
         many = " ".join([
@@ -384,8 +390,8 @@ class TestProsConsBottomLine(unittest.TestCase):
             "dakterras zonnig vrij uitzicht dubbel glas rustig berging luxe",
         ])
         msg = _format_listing_message(make_listing(description=many))
-        pros_section = msg.split("🟢 Pros:")[1].split("\n")[1:]
-        bullets = [l for l in pros_section if l.startswith("•")]
+        pros_section = msg.split("🟢 Pros:")[1].split("🔴 Cons:")[0]
+        bullets = [l for l in pros_section.splitlines() if l.startswith("•")]
         self.assertLessEqual(len(bullets), 5)
 
     def test_negated_phrases_do_not_match(self):
@@ -404,16 +410,15 @@ class TestProsConsBottomLine(unittest.TestCase):
             description="Woning op erfpachtgrond met jaarlijkse canon."))
         self.assertIn("• Leasehold ground rent", msg)
 
-    def test_bottom_line_with_and_without_cons(self):
+    def test_bottom_line_present_with_trade_off(self):
         msg = _format_listing_message(make_listing(
             description=DESCRIPTION_PRO + " " + DESCRIPTION_CON))
         self.assertRegex(msg, r"Bottom line: .* stand out, with .* "
                               r"as the main trade-off\.")
         msg = _format_listing_message(make_listing(description=DESCRIPTION_PRO))
-        self.assertRegex(msg, r"Bottom line: .* stand out, with no notable "
-                              r"trade-offs mentioned in the listing\.")
-        msg = _format_listing_message(make_listing(description=DESCRIPTION_CON))
-        self.assertNotIn("Bottom line:", msg)  # no pros -> no bottom line
+        self.assertIn("Bottom line: ", msg)
+        # fixture has no cons from description; metric cons fill in
+        self.assertIn("• No garage", msg)
 
     def test_description_message_fits_media_caption(self):
         msg = _format_listing_message(make_listing(
