@@ -104,6 +104,7 @@ class DetailData:
     status: Optional[str] = None
     plot_size_m2: Optional[int] = None
     image_urls: Optional[list] = None
+    description: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -148,7 +149,7 @@ def _extract_page_text(page: Page) -> str:
 _TOP_LEVEL_SECTIONS = {
     "kenmerken", "buitenruimte", "isolatie",
     "garage en parkeergelegenheid", "energie", "buurt",
-    "locatie", "indeling",
+    "locatie", "indeling", "beschrijving", "omschrijving",
 }
 
 # Known subsection headings within Kenmerken
@@ -1221,6 +1222,17 @@ def fetch_listing_details(url: str) -> dict:
 
                 # Split into sections and parse
                 sections = _split_sections(text)
+
+                # --- Description (Beschrijving / Omschrijving section) ---
+                # Raw Dutch text; used by the notifier for the Pros/Cons
+                # and Bottom line sections. Never interpreted here.
+                description_body = _find_section_body(sections, "Beschrijving")
+                if not description_body:
+                    description_body = _find_section_body(sections, "Omschrijving")
+                if not description_body:
+                    description_body = _find_text_block(text, "Beschrijving")
+                if description_body:
+                    result.description = description_body.strip()[:4000]
 
                 # Kenmerken section — most fields
                 kenmerken_body = _find_section_body(sections, "Kenmerken")
