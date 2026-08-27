@@ -415,7 +415,10 @@ Phase 1 filter matching.
   rendering technique from `scraper.py` to bypass Akamai bot-protection.
   Returns a dict with all detail fields (Section 3 of the spec). Any
   field that cannot be parsed is set to `None` — never omitted, never
-  guessed.
+  guessed. As of Task 10 it also returns the raw Dutch listing
+  description (`description`, capped at 4000 chars) for the
+  notification's Pros/Cons/Bottom line sections; the field is
+  in-memory only and is not persisted.
 
 * **`src/scoring.py`** — Scores a listing's detail data against user
   preferences loaded from `config/preferences.json`. Implements the
@@ -532,6 +535,16 @@ format is:
 ⚡ Energy label: {energy_label}
 🏗 Year built: {year_built}
 🅿️ Parking: {value}
+
+🟢 Pros:
+• {bullet}
+• ...
+
+🔴 Cons:
+• {bullet}
+• ...
+
+Bottom line: ...
 ```
 
 > **Superseded (Task 8):** the previous "Task 7" layout used metric
@@ -573,9 +586,18 @@ format is:
 * **Not displayed** — property type, listing status, ownership wording
   (Dutch terminology such as `Eengezinswoning`, `Beschikbaar`,
   `Erfpacht`), and the Garage line (not part of the approved
-  template). "Number of stories" and Pros/Cons/Bottom line are omitted
-  because the project does not extract the number of floors or the
-  property description text, and fabricating them is forbidden.
+  template). "Number of stories" is omitted because the project does
+  not extract the number of floors.
+* **Pros / Cons / Bottom line** (Task 10) — generated at presentation
+  level from the raw Dutch description text extracted by
+  `detail_scraper.py` (`description` field). A bullet is emitted only
+  when its Dutch keyword phrase is actually present in the
+  description (max 5 per section; negations like "niet/geen/zonder"
+  suppress a match); erfpacht is listed as a con only when the canon
+  is not bought off ("afgekocht"). The Bottom line is one sentence
+  combining the top two pros and the main con, and is omitted when no
+  pros exist. The sections are omitted entirely when no description
+  data exists — nothing is fabricated.
 * **English-only values** — the energy label is displayed only when it
   matches the valid Funda label pattern (A–G with optional `+`);
   garbled Dutch page text (a known detail-scraper parsing edge case)
