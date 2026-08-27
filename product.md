@@ -192,8 +192,8 @@ minimum and includes:
 
 * bedrooms, neighborhood, price per m²
 * plot size, energy label, construction year
-* property features — garage, parking and garden — shown only when the
-  listing's data reliably indicates them
+* property features — garage, parking and garden — always shown, with
+  absence rendered as `No`
 * a more precise location: city and street (area/district and postal
   code are not extracted and are never invented)
 * the match score with its breakdown (Phase 2 format)

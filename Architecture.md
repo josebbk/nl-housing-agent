@@ -562,17 +562,17 @@ notifications"). The format is:
   are omitted entirely.
 * **Property features** (Task 8) — `🚗 Garage`, `🅿️ Parking`,
   `🌳 Garden` lines appear directly after `🏗 Year built` and before
-  the score section, **only when the underlying data reliably
-  indicates the value**:
+  the score section, always shown, with absence rendered as `No`:
   * Garage/Parking stored values are either short English codes or
     raw Dutch page text; both are converted to English at
     presentation level in `notifier.py` (`_garage_value` /
     `_parking_value`), mirroring the keyword classification of
     `detail_scraper.py`/`scoring.py`. `garage mogelijk` shows as
-    `Possible`, an explicit "no parking" value shows as `No`;
-    missing or unrecognized values omit the line.
-  * Garden shows `Yes` only when `garden_present` is true or a
-    positive `garden_size_m2` exists; absence is never shown as `No`.
+    `Possible`; missing, "no garage/parking" or unrecognized values
+    show as `No` (a missing `garage_type` is a confirmed negative —
+    Funda omits the garage section when a listing has no garage).
+  * Garden shows `Yes` when `garden_present` is true or a positive
+    `garden_size_m2` exists, otherwise `No`.
 * **Location** (Task 8) — `📍 Location` uses the available components
   in the order City → Area/District → Street → Postal code. City comes
   from `neighborhood` (capitalized); Street is derived from the
@@ -638,9 +638,8 @@ placeholder values:
   appear only when the respective field is non-null (`plot_size_m2`,
   `year_built`).
 * **Property features** — `🚗 Garage`, `🅿️ Parking`, `🌳 Garden`
-  lines appear only when the underlying data reliably indicates the
-  value; Garage/Parking values are English (see the metric-only format
-  rules above).
+  lines are always shown; Garage/Parking values are English and absence
+  renders as `No` (see the metric-only format rules above).
 * **Property type, status and ownership** — not displayed (Dutch
   terminology, see the metric-only format rules above).
 * The score sections and URL line are unchanged.
