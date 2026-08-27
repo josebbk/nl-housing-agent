@@ -125,60 +125,63 @@ _VALID_ENERGY_LABEL = re.compile(r"^[A-G](?:\+{1,4})?$")
 _HOUSE_NUMBER_SUFFIX = re.compile(r"\s+\d+(?:-\d+)?(?:-[A-Za-z]{1,4})?$")
 
 
-def _garage_value(raw: str | None) -> str | None:
-    """English presentation value for a stored garage_type, or None.
+def _garage_value(raw: str | None) -> str:
+    """English presentation value for a stored garage_type.
 
     Mirrors the extractor's classification (aangebouwd/inpandig ->
     attached, vrijstaand -> detached, carport -> carport) and scoring's
-    "garage mogelijk" tier. Returns None when the value is absent or
-    unrecognized so the Garage line is omitted rather than guessed.
+    "garage mogelijk" tier. Returns "No" when the value is absent or
+    unrecognized: a missing garage_type is a confirmed negative (Funda
+    omits the garage section when a listing has no garage), so the line
+    is always shown, including as "Garage: No".
     """
-    if not raw:
-        return None
-    primary = raw.strip().split("+")[0].strip().lower()
-    if primary in _GARAGE_VALUE_MAP:
-        return _GARAGE_VALUE_MAP[primary]
-    if "mogelijk" in primary:
-        return "Possible"
-    for keyword, label in (
-        ("inpandig", "Attached"),
-        ("aangebouwd", "Attached"),
-        ("vrijstaand", "Detached"),
-        ("carport", "Carport"),
-    ):
-        if keyword in primary:
-            return label
-    if any(kw in primary for kw in ("garagebox", "parkeerkelder", "souterrain", "parkeerplaats")):
-        return "Yes"
-    return None
+    if raw:
+        primary = raw.strip().split("+")[0].strip().lower()
+        if primary in _GARAGE_VALUE_MAP:
+            return _GARAGE_VALUE_MAP[primary]
+        if "mogelijk" in primary:
+            return "Possible"
+        if "niet aanwezig" in primary or "geen" in primary:
+            return "No"
+        for keyword, label in (
+            ("inpandig", "Attached"),
+            ("aangebouwd", "Attached"),
+            ("vrijstaand", "Detached"),
+            ("carport", "Carport"),
+        ):
+            if keyword in primary:
+                return label
+        if any(kw in primary for kw in ("garagebox", "parkeerkelder", "souterrain", "parkeerplaats")):
+            return "Yes"
+    return "No"
 
 
-def _parking_value(raw: str | None) -> str | None:
-    """English presentation value for a stored parking_type, or None.
+def _parking_value(raw: str | None) -> str:
+    """English presentation value for a stored parking_type.
 
     Mirrors the extractor's classification (eigen terrein -> private,
     carport -> carport, openbaar -> public, betaald -> paid) and covers
-    raw Dutch phrases the extractor does not classify. Returns None when
-    the value is absent or unrecognized so the Parking line is omitted.
+    raw Dutch phrases the extractor does not classify. Returns "No"
+    when the value is absent or unrecognized so the line is always
+    shown, including as "Parking: No".
     """
-    if not raw:
-        return None
-    primary = raw.strip().split("+")[0].strip().lower()
-    if primary in _PARKING_VALUE_MAP:
-        return _PARKING_VALUE_MAP[primary]
-    if "geen" in primary:
-        return "No"
-    for keyword, label in (
-        ("eigen terrein", "Private"),
-        ("parkeervergunning", "Permit"),
-        ("vergunning", "Permit"),
-        ("carport", "Carport"),
-        ("openbaar", "Public"),
-        ("betaald", "Paid"),
-    ):
-        if keyword in primary:
-            return label
-    return None
+    if raw:
+        primary = raw.strip().split("+")[0].strip().lower()
+        if primary in _PARKING_VALUE_MAP:
+            return _PARKING_VALUE_MAP[primary]
+        if "geen" in primary:
+            return "No"
+        for keyword, label in (
+            ("eigen terrein", "Private"),
+            ("parkeervergunning", "Permit"),
+            ("vergunning", "Permit"),
+            ("carport", "Carport"),
+            ("openbaar", "Public"),
+            ("betaald", "Paid"),
+        ):
+            if keyword in primary:
+                return label
+    return "No"
 
 
 def _garden_present(listing: dict) -> bool:
@@ -277,13 +280,14 @@ def _format_listing_message(listing: dict) -> str:
     Price-per-m² is computed only from the two required fields (price,
     living_area_m2). Property type, listing status and ownership
     (Dutch terminology such as "Eengezinswoning", "Beschikbaar",
-    "Erfpacht") are not displayed. Garage / Parking / Garden appear only
-    when the underlying data reliably indicates their value; the Garage
-    and Parking values are converted to English at presentation level
-    (_garage_value / _parking_value). Location is built from the
-    available components in the order City → Area/District → Street →
-    Postal code; Area/District and Postal code are not extracted by the
-    project and are therefore never fabricated.
+    "Erfpacht") are not displayed. Garage / Parking / Garden are always
+    shown; their values are converted to English at presentation level
+    (_garage_value / _parking_value) and absence renders as "No" (a
+    missing garage_type is a confirmed negative per the Funda page
+    structure). Location is built from the available components in the
+    order City → Area/District → Street → Postal code; Area/District and
+    Postal code are not extracted by the project and are therefore
+    never fabricated.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -332,15 +336,12 @@ def _format_listing_message(listing: dict) -> str:
         parts.append(f"\U0001f3d7 Year built: {listing['year_built']}")
 
     garage_value = _garage_value(listing.get("garage_type"))
-    if garage_value:
-        parts.append(f"\U0001f697 Garage: {garage_value}")
+    parts.append(f"\U0001f697 Garage: {garage_value}")
 
     parking_value = _parking_value(listing.get("parking_type"))
-    if parking_value:
-        parts.append(f"\U0001f17f\ufe0f Parking: {parking_value}")
+    parts.append(f"\U0001f17f\ufe0f Parking: {parking_value}")
 
-    if _garden_present(listing):
-        parts.append("\U0001f333 Garden: Yes")
+    parts.append(f"\U0001f333 Garden: {'Yes' if _garden_present(listing) else 'No'}")
 
     parts.append("")
 
