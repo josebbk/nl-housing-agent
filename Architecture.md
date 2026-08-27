@@ -588,16 +588,19 @@ Bottom line: ...
   `Erfpacht`), and the Garage line (not part of the approved
   template). "Number of stories" is omitted because the project does
   not extract the number of floors.
-* **Pros / Cons / Bottom line** (Task 10) — generated at presentation
-  level from the raw Dutch description text extracted by
-  `detail_scraper.py` (`description` field). A bullet is emitted only
-  when its Dutch keyword phrase is actually present in the
-  description (max 5 per section; negations like "niet/geen/zonder"
-  suppress a match); erfpacht is listed as a con only when the canon
-  is not bought off ("afgekocht"). The Bottom line is one sentence
-  combining the top two pros and the main con, and is omitted when no
-  pros exist. The sections are omitted entirely when no description
-  data exists — nothing is fabricated.
+* **Pros / Cons / Bottom line** (Task 10) — every notification
+  carries 🟢 Pros and 🔴 Cons (max 5 bullets each) plus a one-sentence
+  Bottom line. Bullets come first from Dutch keyword phrases actually
+  present in the description extracted by `detail_scraper.py`
+  (`description` field; negations like "niet/geen/zonder" suppress a
+  match; erfpacht is a con only when the canon is not bought off —
+  "afgekocht"), then from the listing's own data (energy label, living
+  area, plot size, construction year, garden, garage, parking,
+  price/m² vs neighborhood average, price vs search range). If no
+  bullets exist at all, honest fallbacks are used ("Matches all your
+  core criteria…" / "No notable drawbacks identified in the available
+  data"). The Bottom line combines the top two pros and the main con.
+  Nothing is fabricated.
 * **English-only values** — the energy label is displayed only when it
   matches the valid Funda label pattern (A–G with optional `+`);
   garbled Dutch page text (a known detail-scraper parsing edge case)

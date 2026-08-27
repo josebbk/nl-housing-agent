@@ -246,10 +246,10 @@ original Dutch term in parentheses where the scraped value is Dutch.
 Fields that a listing does not expose are omitted from the message —
 values are never invented or shown as placeholders. "Number of stories"
 is omitted because the project does not extract the number of floors.
-When the extracted property description is available, the notification
-adds `🟢 Pros` / `🔴 Cons` bullet lists (max 5 each) and a one-sentence
-`Bottom line`, generated only from phrases actually present in the
-description — never fabricated.
+Every notification carries `🟢 Pros` / `🔴 Cons` bullet lists (max 5
+each) and a one-sentence `Bottom line`: bullets are generated first
+from phrases actually present in the extracted property description,
+then from the listing's own data — never fabricated.
 
 ---
 
