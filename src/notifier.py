@@ -236,15 +236,148 @@ def _extract_bullets(description: str, patterns: list[tuple[str, str]]) -> list[
     return bullets
 
 
+_GOOD_ENERGY_LABELS = {"A", "A+", "A++", "A+++", "A++++"}
+
+_ORIENTATION_LABELS = {
+    "noorden": "North", "noordwesten": "Northwest",
+    "noordoosten": "Northeast", "westen": "West",
+    "zuidwesten": "Southwest", "oosten": "East",
+    "zuidoosten": "Southeast", "zuiden": "South",
+}
+
+
+def _metric_pros(listing: dict) -> list[str]:
+    """Data-driven strengths from the listing's existing fields.
+
+    Each bullet is a fact about this listing's own data — nothing is
+    invented. Used to fill the Pros section when the description does
+    not yield enough bullets.
+    """
+    bullets: list[str] = []
+    label = str(listing.get("energy_label") or "").strip().upper()
+    if label in _GOOD_ENERGY_LABELS:
+        bullets.append(f"Excellent energy label ({label})")
+    elif label == "B":
+        bullets.append(f"Good energy label ({label})")
+
+    living = listing.get("living_area_m2")
+    if living and living >= 130:
+        bullets.append("Generous living area")
+
+    plot = listing.get("plot_size_m2")
+    if plot and plot >= 150:
+        bullets.append("Large plot")
+
+    year = listing.get("year_built")
+    if year and year >= 2000:
+        bullets.append(f"Modern construction (built {year})")
+    elif year and 1990 <= year < 2000:
+        bullets.append(f"Relatively modern construction (built {year})")
+
+    if listing.get("balcony_present"):
+        bullets.append("Balcony")
+
+    garage_type = (listing.get("garage_type") or "").lower()
+    if garage_type and "mogelijk" not in garage_type:
+        bullets.append("Garage included")
+
+    if listing.get("parking_type") == "private":
+        bullets.append("Private parking")
+
+    if _garden_size(listing):
+        size = listing.get("garden_size_m2")
+        if size and size >= 40:
+            bullets.append("Spacious garden")
+        else:
+            bullets.append("Private garden")
+    orientation = (listing.get("garden_orientation") or "").strip().lower()
+    if orientation in _ORIENTATION_LABELS:
+        bullets.append(
+            f"{_ORIENTATION_LABELS[orientation]}-facing garden"
+        )
+
+    price = listing.get("price")
+    if price and living and listing.get("neighborhood_avg_price_m2"):
+        if price / living < listing["neighborhood_avg_price_m2"] * 0.95:
+            bullets.append("Priced below the neighborhood average per m²")
+
+    if price is not None and price < 600000:
+        bullets.append("Priced at the lower end of your search range")
+
+    return bullets
+
+
+def _metric_cons(listing: dict) -> list[str]:
+    """Data-driven trade-offs from the listing's existing fields.
+
+    Each bullet is a fact about this listing's own data — nothing is
+    invented. Used to fill the Cons section when the description does
+    not yield enough bullets.
+    """
+    bullets: list[str] = []
+    label = str(listing.get("energy_label") or "").strip().upper()
+    if label in {"E", "F", "G"}:
+        bullets.append(f"Below-average energy label ({label})")
+
+    living = listing.get("living_area_m2")
+    if living and living <= 105:
+        bullets.append("Modest living area")
+
+    year = listing.get("year_built")
+    if year and year < 1930:
+        bullets.append(f"Older construction (built {year})")
+    elif year and 1930 <= year < 1960:
+        bullets.append(f"Mid-century construction (built {year})")
+
+    garage_type = (listing.get("garage_type") or "").lower()
+    if not garage_type or "mogelijk" in garage_type:
+        bullets.append("No garage")
+
+    parking_type = listing.get("parking_type")
+    if parking_type is None:
+        bullets.append("No dedicated parking mentioned")
+    elif parking_type in ("public", "paid"):
+        bullets.append("Street parking only")
+
+    if (
+        listing.get("ownership_type") == "erfpacht"
+        and listing.get("erfpacht_canon_annual")
+    ):
+        bullets.append("Leasehold with annual ground rent")
+
+    if listing.get("garden_present") is False:
+        bullets.append("No private outdoor space")
+
+    price = listing.get("price")
+    if price and living and listing.get("neighborhood_avg_price_m2"):
+        if price / living > listing["neighborhood_avg_price_m2"] * 1.05:
+            bullets.append("Priced above the neighborhood average per m²")
+
+    if price is not None and price > 700000:
+        bullets.append("Priced at the upper end of your search range")
+
+    return bullets
+
+
+def _garden_size(listing: dict) -> bool:
+    """Return True when the listing reliably has a garden."""
+    if listing.get("garden_present"):
+        return True
+    size = listing.get("garden_size_m2")
+    return isinstance(size, (int, float)) and size > 0
+
+
 def _bottom_line(pros: list[str], cons: list[str]) -> str | None:
     """One concise summary sentence from the extracted bullets."""
     if not pros:
         return None
     strength = " and ".join(bullet.rstrip(".") for bullet in pros[:2])
     if cons:
+        trade_off = cons[0].rstrip(".")
+        trade_off = trade_off[0].lower() + trade_off[1:]
         return (
             f"Bottom line: {strength} stand out, with "
-            f"{cons[0].rstrip('.')} as the main trade-off."
+            f"{trade_off} as the main trade-off."
         )
     return (
         f"Bottom line: {strength} stand out, with no notable "
@@ -325,10 +458,10 @@ def _format_listing_message(listing: dict) -> str:
       available components in the order City → Area/District → Street →
       Postal code (Area/District and Postal code are never invented)
       and carries the Funda link;
-    * when the listing carries the extracted description text
-      (detail_scraper ``description`` field), 🟢 Pros / 🔴 Cons /
-      Bottom line sections are generated from phrases actually present
-      in that text — never fabricated.
+    * every notification carries 🟢 Pros and 🔴 Cons sections plus a
+      Bottom line. Bullets come first from phrases actually present in
+      the extracted description text (detail_scraper ``description``
+      field), then from the listing's own data — never fabricated.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -392,36 +525,50 @@ def _format_listing_message(listing: dict) -> str:
         f"\U0001f17f\ufe0f Parking: {_parking_value(listing.get('parking_type'))}"
     )
 
-    # --- Pros / Cons / Bottom line from the property description ---
-    # Only emitted when the listing carries the extracted description
-    # text; each bullet corresponds to a Dutch phrase actually present.
-    description = listing.get("description")
-    if description:
-        pros = _extract_bullets(description, _PRO_PATTERNS)
-        cons = _extract_bullets(description, _CON_PATTERNS)
-        desc_lower = description.lower()
-        if (
-            "erfpacht" in desc_lower
-            and "afgekocht" not in desc_lower
-            and "Leasehold ground rent" not in cons
-            and len(cons) < _MAX_BULLETS
-        ):
-            cons.append("Leasehold ground rent")
-        bottom_line = _bottom_line(pros, cons)
-        if pros or cons or bottom_line:
-            parts.append("")
-            if pros:
-                parts.append("\U0001f7e2 Pros:")
-                for bullet in pros:
-                    parts.append(f"\u2022 {bullet}")
-            if cons:
-                parts.append("")
-                parts.append("\U0001f534 Cons:")
-                for bullet in cons:
-                    parts.append(f"\u2022 {bullet}")
-            if bottom_line:
-                parts.append("")
-                parts.append(bottom_line)
+    # --- Pros / Cons / Bottom line ---
+    # Every notification carries both sections. Bullets come first from
+    # phrases actually present in the extracted description, then from
+    # the listing's own data (metrics) — never fabricated.
+    description = listing.get("description") or ""
+    pros: list[str] = _extract_bullets(description, _PRO_PATTERNS)
+    cons: list[str] = _extract_bullets(description, _CON_PATTERNS)
+
+    desc_lower = description.lower()
+    if (
+        "erfpacht" in desc_lower
+        and "afgekocht" not in desc_lower
+        and "Leasehold ground rent" not in cons
+    ):
+        cons.append("Leasehold ground rent")
+
+    for bullet in _metric_pros(listing):
+        if bullet not in pros and len(pros) < _MAX_BULLETS:
+            pros.append(bullet)
+    if not pros:
+        pros.append("Matches all your core criteria (price, size, bedrooms)")
+
+    for bullet in _metric_cons(listing):
+        if bullet not in cons and len(cons) < _MAX_BULLETS:
+            cons.append(bullet)
+    if not cons:
+        cons.append("No notable drawbacks identified in the available data")
+
+    pros = pros[:_MAX_BULLETS]
+    cons = cons[:_MAX_BULLETS]
+
+    parts.append("")
+    parts.append("\U0001f7e2 Pros:")
+    for bullet in pros:
+        parts.append(f"\u2022 {bullet}")
+    parts.append("")
+    parts.append("\U0001f534 Cons:")
+    for bullet in cons:
+        parts.append(f"\u2022 {bullet}")
+
+    bottom_line = _bottom_line(pros, cons)
+    if bottom_line:
+        parts.append("")
+        parts.append(bottom_line)
 
     return "\n".join(parts)
 
