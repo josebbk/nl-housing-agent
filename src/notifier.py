@@ -25,6 +25,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -93,6 +94,116 @@ def _criterion_label(key: str) -> str:
     return _CRITERION_LABELS.get(key, key)
 
 
+# ---------------------------------------------------------------------------
+# Presentation-layer value mapping (English-only notification)
+# ---------------------------------------------------------------------------
+# detail_scraper.py stores garage_type/parking_type either as short English
+# codes or, when unclassified, as raw Dutch page text. These mappings
+# convert them to English at presentation level ONLY — the stored values,
+# scraping and scoring are never touched. They mirror the keyword logic
+# already used by detail_scraper.py / scoring.py.
+
+_GARAGE_VALUE_MAP: dict[str, str] = {
+    "attached": "Attached",
+    "detached": "Detached",
+    "carport": "Carport",
+}
+
+_PARKING_VALUE_MAP: dict[str, str] = {
+    "private": "Private",
+    "carport": "Carport",
+    "public": "Public",
+    "paid": "Paid",
+}
+
+# Valid Funda energy labels (worst -> best). Anything else (e.g. a garbled
+# concatenated Dutch page section) is not a label and is not displayed.
+_VALID_ENERGY_LABEL = re.compile(r"^[A-G](?:\+{1,4})?$")
+
+# Trailing house-number pattern of a "Street 123", "Street 34-3",
+# "Street 80-A" or "Street 245-III" style address.
+_HOUSE_NUMBER_SUFFIX = re.compile(r"\s+\d+(?:-\d+)?(?:-[A-Za-z]{1,4})?$")
+
+
+def _garage_value(raw: str | None) -> str | None:
+    """English presentation value for a stored garage_type, or None.
+
+    Mirrors the extractor's classification (aangebouwd/inpandig ->
+    attached, vrijstaand -> detached, carport -> carport) and scoring's
+    "garage mogelijk" tier. Returns None when the value is absent or
+    unrecognized so the Garage line is omitted rather than guessed.
+    """
+    if not raw:
+        return None
+    primary = raw.strip().split("+")[0].strip().lower()
+    if primary in _GARAGE_VALUE_MAP:
+        return _GARAGE_VALUE_MAP[primary]
+    if "mogelijk" in primary:
+        return "Possible"
+    for keyword, label in (
+        ("inpandig", "Attached"),
+        ("aangebouwd", "Attached"),
+        ("vrijstaand", "Detached"),
+        ("carport", "Carport"),
+    ):
+        if keyword in primary:
+            return label
+    if any(kw in primary for kw in ("garagebox", "parkeerkelder", "souterrain", "parkeerplaats")):
+        return "Yes"
+    return None
+
+
+def _parking_value(raw: str | None) -> str | None:
+    """English presentation value for a stored parking_type, or None.
+
+    Mirrors the extractor's classification (eigen terrein -> private,
+    carport -> carport, openbaar -> public, betaald -> paid) and covers
+    raw Dutch phrases the extractor does not classify. Returns None when
+    the value is absent or unrecognized so the Parking line is omitted.
+    """
+    if not raw:
+        return None
+    primary = raw.strip().split("+")[0].strip().lower()
+    if primary in _PARKING_VALUE_MAP:
+        return _PARKING_VALUE_MAP[primary]
+    if "geen" in primary:
+        return "No"
+    for keyword, label in (
+        ("eigen terrein", "Private"),
+        ("parkeervergunning", "Permit"),
+        ("vergunning", "Permit"),
+        ("carport", "Carport"),
+        ("openbaar", "Public"),
+        ("betaald", "Paid"),
+    ):
+        if keyword in primary:
+            return label
+    return None
+
+
+def _garden_present(listing: dict) -> bool:
+    """Return True when the listing reliably has a garden."""
+    if listing.get("garden_present"):
+        return True
+    size = listing.get("garden_size_m2")
+    return isinstance(size, (int, float)) and size > 0
+
+
+def _street_from_address(address: str) -> str | None:
+    """Derive the street name from a "Street 123[-X]" address.
+
+    Returns None when no house number can be stripped, so a street is
+    never guessed for addresses like "Open huis".
+    """
+    if not address:
+        return None
+    address = address.strip()
+    street = _HOUSE_NUMBER_SUFFIX.sub("", address)
+    if street and street != address:
+        return street
+    return None
+
+
 def _fits_telegram_caption(text: str) -> bool:
     """Return True when ``text`` fits Telegram's media caption limit."""
     return len(text) <= _CAPTION_SAFETY_LIMIT
@@ -146,9 +257,12 @@ def _format_listing_message(listing: dict) -> str:
         📐 Size: {living_area} m² · €{price/m²}/m²
         🛏 Bedrooms: {bedrooms}
         ⚡ Energy label: {label}
-        📍 Location: {neighborhood}
-        🌳 Plot: {plot_size_m2} m²
+        📍 Location: {city} · {street}
+        📏 Plot: {plot_size_m2} m²
         🏗 Year built: {year_built}
+        🚗 Garage: {value}
+        🅿️ Parking: {value}
+        🌳 Garden: Yes
 
         ⭐ Score: <b>{score}/100</b>
         ⚠️ Adjusted: {missing criteria} data unavailable   (partial only)
@@ -163,7 +277,13 @@ def _format_listing_message(listing: dict) -> str:
     Price-per-m² is computed only from the two required fields (price,
     living_area_m2). Property type, listing status and ownership
     (Dutch terminology such as "Eengezinswoning", "Beschikbaar",
-    "Erfpacht") are not displayed.
+    "Erfpacht") are not displayed. Garage / Parking / Garden appear only
+    when the underlying data reliably indicates their value; the Garage
+    and Parking values are converted to English at presentation level
+    (_garage_value / _parking_value). Location is built from the
+    available components in the order City → Area/District → Street →
+    Postal code; Area/District and Postal code are not extracted by the
+    project and are therefore never fabricated.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -194,17 +314,33 @@ def _format_listing_message(listing: dict) -> str:
 
     parts.append(f"\U0001f6cf Bedrooms: {bed_text}")
 
-    if listing.get("energy_label"):
-        parts.append(f"\u26a1 Energy label: {listing['energy_label']}")
+    energy_label = listing.get("energy_label")
+    if energy_label and _VALID_ENERGY_LABEL.match(str(energy_label).strip().upper()):
+        parts.append(f"\u26a1 Energy label: {str(energy_label).strip().upper()}")
 
     if neighborhood:
-        parts.append(f"\U0001f4cd Location: {neighborhood.title()}")
+        location_bits = [neighborhood.title()]
+        street = _street_from_address(address if address != "N/A" else "")
+        if street:
+            location_bits.append(street)
+        parts.append("\U0001f4cd Location: " + " \u00b7 ".join(location_bits))
 
     if listing.get("plot_size_m2"):
-        parts.append(f"\U0001f333 Plot: {listing['plot_size_m2']} m\u00b2")
+        parts.append(f"\U0001f4cf Plot: {listing['plot_size_m2']} m\u00b2")
 
     if listing.get("year_built"):
         parts.append(f"\U0001f3d7 Year built: {listing['year_built']}")
+
+    garage_value = _garage_value(listing.get("garage_type"))
+    if garage_value:
+        parts.append(f"\U0001f697 Garage: {garage_value}")
+
+    parking_value = _parking_value(listing.get("parking_type"))
+    if parking_value:
+        parts.append(f"\U0001f17f\ufe0f Parking: {parking_value}")
+
+    if _garden_present(listing):
+        parts.append("\U0001f333 Garden: Yes")
 
     parts.append("")
 
