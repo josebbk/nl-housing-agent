@@ -467,7 +467,7 @@ def main() -> None:
     )
     try:
         listings = scrape_funda(
-            area="amsterdam",
+            area=filters.selected_area or "amsterdam",
             offering_type=offering_type,
             price_min=filters.price_min,
             price_max=filters.price_max,
@@ -485,6 +485,20 @@ def main() -> None:
             garden_size_min=filters.garden_size_min,
             availability=filters.availability,
             sort=filters.sort,
+            object_type=filters.object_type,
+            plot_area_min=filters.plot_size_min,
+            plot_area_max=filters.plot_size_max,
+            bathrooms_min=filters.bathrooms_min,
+            bathrooms_max=filters.bathrooms_max,
+            garage_capacity_min=filters.garage_capacity_min,
+            garage_capacity_max=filters.garage_capacity_max,
+            exterior_space_type=filters.exterior_space_type,
+            exterior_space_garden_orientation=filters.exterior_space_garden_orientation,
+            zoning=filters.zoning,
+            parking_facility=filters.parking_facility,
+            garage_type=filters.garage_type,
+            accessibility=filters.accessibility,
+            amenities=filters.amenities,
             publication_date_days=scan_publication_date_days,
             max_pages=scan_max_pages,
         )
@@ -824,7 +838,7 @@ def _run_seed(db_path: str, filters: FilterConfig, run_start: datetime) -> None:
     )
     try:
         listings = scrape_funda(
-            area="amsterdam",
+            area=filters.selected_area or "amsterdam",
             offering_type=offering_type,
             price_min=filters.price_min,
             price_max=filters.price_max,
@@ -842,6 +856,20 @@ def _run_seed(db_path: str, filters: FilterConfig, run_start: datetime) -> None:
             garden_size_min=filters.garden_size_min,
             availability=filters.availability,
             sort=filters.sort,
+            object_type=filters.object_type,
+            plot_area_min=filters.plot_size_min,
+            plot_area_max=filters.plot_size_max,
+            bathrooms_min=filters.bathrooms_min,
+            bathrooms_max=filters.bathrooms_max,
+            garage_capacity_min=filters.garage_capacity_min,
+            garage_capacity_max=filters.garage_capacity_max,
+            exterior_space_type=filters.exterior_space_type,
+            exterior_space_garden_orientation=filters.exterior_space_garden_orientation,
+            zoning=filters.zoning,
+            parking_facility=filters.parking_facility,
+            garage_type=filters.garage_type,
+            accessibility=filters.accessibility,
+            amenities=filters.amenities,
             max_pages=5,
         )
         stats = {"listings_scraped": len(listings)}

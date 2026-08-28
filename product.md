@@ -152,7 +152,11 @@ the `required` key and every optional preference under the `optional` key
 * **living_area** — `living_area_min` (≥100 m² default) and
   `living_area_max`.
 * **rooms** — `rooms_min` and `rooms_max` (total rooms, search-level only).
-* **plot_size** — `plot_size_min` and `plot_size_max` (m²).
+* **plot_size** — `plot_size_min` and `plot_size_max` (m²); also emitted as
+  the `plot_area` search-URL parameter.
+* **bathrooms** — `bathrooms_min` and `bathrooms_max` (search-level only).
+* **garage_capacity** — `garage_capacity_min` and `garage_capacity_max`
+  (search-level only).
 
 > **Superseded (filters task):** the `energy_label` ranged preference
 > (`energy_label_min` / `energy_label_max`, G (lowest) → A++++ (highest)) was
@@ -165,10 +169,24 @@ the `required` key and every optional preference under the `optional` key
 * **radius_km** — a search radius in kilometres around Amsterdam, sent as a
   separate `radius_search` parameter (the old embedded `selected_area`
   JSON-array encoding is superseded).
-* **construction_type** — exact construction type, `existing` or `new`.
+* **selected_area** — the area slug to search (default `amsterdam`, e.g.
+  `"nl"` for nationwide), emitted as `selected_area`.
 
 **List-valued and other search-level filters:**
 
+* **construction_type** — a multi-value list of construction types using
+  Funda's tokens `newly_built` / `resale` (the legacy `new` / `existing` are
+  accepted and mapped). `null` means no restriction.
+* **object_type** — a multi-value list (`apartment`, `house`).
+* **exterior_space_type** — a multi-value list (`balcony`, `terrace`,
+  `garden`).
+* **exterior_space_garden_orientation** — a multi-value list (`north`,
+  `east`, `south`, `west`).
+* **zoning** — a multi-value list (`residential`, `recreational`).
+* **parking_facility** — a multi-value list of parking-facility types.
+* **garage_type** — a multi-value list of garage types.
+* **accessibility** — a multi-value list of accessibility features.
+* **amenities** — a multi-value list of amenities.
 * **energy_labels** — an ordered list of energy labels (e.g. `["A++++",
   "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"]`) sent to Funda verbatim
   in the configured order. The default order is unusual (`A+++++` appears
@@ -177,16 +195,17 @@ the `required` key and every optional preference under the `optional` key
 * **construction_periods** — build-year periods expressed as human-readable
   keys (`"1971-1980"`, `"1981-1990"`, …, `"after_2020"`), mapped to Funda's
   internal codes via `CONSTRUCTION_PERIOD_MAP`.
-* **garden** — boolean; `true` requires a garden
-  (`exterior_space_type=garden`).
-* **garden_size_min** — minimum garden size in m²; only meaningful when
-  `garden` is `true`.
+* **garden** — boolean legacy shorthand; `true` is equivalent to including
+  `"garden"` in `exterior_space_type`.
+* **garden_size_min** — minimum garden size in m²; only meaningful when a
+  garden is selected (`garden=true` or `"garden"` in `exterior_space_type`).
 * **availability** — free-string availability filter (e.g. `"available"`).
 * **sort** — free-string sort ordering (e.g. `"publish_date_utc_desc"`).
 
 These list-valued, boolean, and free-string filters are **search-level only**
-and, like `rooms_min`/`rooms_max`, `radius_km`, and `construction_type`, are
-not applied in the local storage matching query.
+and, like `rooms_min`/`rooms_max`, `radius_km`, `selected_area`, and
+`construction_type`, are not applied in the local storage matching query
+(`plot_size_min`/`max` is the exception — it is applied in both).
 
 When a preference is unset (`null` in `config/filters.json`), it imposes no
 restriction. For ranged filters a `null` bound leaves that side open-ended.

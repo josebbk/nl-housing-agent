@@ -59,15 +59,37 @@ _OPTIONAL_FILTER_KEYS = (
     "energy_labels",
     "transaction_type",
     "radius_km",
+    "selected_area",
     "construction_type",
     "construction_periods",
+    "object_type",
+    "bathrooms_min",
+    "bathrooms_max",
+    "garage_capacity_min",
+    "garage_capacity_max",
+    "exterior_space_type",
+    "exterior_space_garden_orientation",
     "garden",
     "garden_size_min",
+    "zoning",
+    "parking_facility",
+    "garage_type",
+    "accessibility",
+    "amenities",
     "availability",
     "sort",
 )
 
 _FILTER_KEYS = _REQUIRED_FILTER_KEYS + _OPTIONAL_FILTER_KEYS
+
+# Documentation-only keys tolerated in ``config/filters.json``. JSON has no
+# comments; following the ``"note"`` convention already used in
+# ``config/preferences.json``, a top-level or per-section ``"note"`` (and the
+# ``"_comment"`` alias) carries human documentation. These keys are explicitly
+# ignored by the loader and never become filter fields, so they cannot collide
+# with real filter keys, while a genuine typo of a real key (e.g.
+# ``"bedroom_min"``) is still rejected.
+_DOCUMENTATION_KEYS = ("note", "_comment")
 
 # The energy_labels default order (A++++, A+++, A++, A+, A, B, C, D, A+++++)
 # is preserved exactly as it appeared in the authoritative source URL, not
@@ -89,6 +111,109 @@ CONSTRUCTION_PERIOD_MAP = {
     "after_2020": "after_2020",
 }
 
+# Funda search-parameter vocabularies for the multi-value filters added by the
+# full-search-parameter-coverage task. These are Funda's English wire tokens,
+# captured verbatim from the authoritative search URL:
+#
+#   ...&object_type=apartment,house&construction_type=newly_built,resale&...
+#
+# Most values are already human-readable, so they are passed through verbatim
+# (unlike ``construction_periods``, which needs CONSTRUCTION_PERIOD_MAP). Each
+# list is still validated against a fixed vocabulary so an unknown token fails
+# loudly instead of producing a silently-broken URL. NOTE: these vocabularies
+# could not be verified against the live Funda UI in this environment (the
+# site served an Akamai bot-check); they should be re-validated by the owner.
+_OBJECT_TYPES = frozenset({"apartment", "house"})
+_CONSTRUCTION_TYPE_VALID = frozenset({"newly_built", "resale"})
+# Legacy single-value aliases accepted for backward compatibility. The old
+# ``construction_type`` field used ``existing``/``new``; Funda's current
+# tokens are ``resale``/``newly_built``. The two vocabularies refer to the
+# same concept, so legacy values are mapped onto the current tokens rather
+# than rejected.
+_CONSTRUCTION_TYPE_LEGACY_MAP = {"existing": "resale", "new": "newly_built"}
+_EXTERIOR_SPACE_TYPES = frozenset({"balcony", "terrace", "garden"})
+_EXTERIOR_SPACE_GARDEN_ORIENTATIONS = frozenset({"north", "east", "south", "west"})
+_ZONING_VALUES = frozenset({"residential", "recreational"})
+_PARKING_FACILITIES = frozenset({
+    "on_private_property",
+    "on_enclosed_property",
+    "public_parking",
+    "paid_parking",
+    "parking_garage",
+    "parking_permits",
+})
+_GARAGE_TYPES = frozenset({
+    "lean_to",
+    "lock_up",
+    "garage_and_carport",
+    "built_in",
+    "underground",
+    "basement",
+    "detached",
+    "garage_possible",
+    "carport",
+    "parking_space",
+    "all_garages",
+})
+_ACCESSIBILITY_VALUES = frozenset({
+    "lift",
+    "single_storey",
+    "accessible_for_the_disabled",
+    "accessible_for_the_elderly",
+    "adapted_home",
+    "ground_floor",
+})
+_AMENITIES = frozenset({
+    "renewable_energy",
+    "central_heating_boiler",
+    "swimming_pool",
+    "bathtub",
+    "fireplace",
+    "fixer_upper",
+    "double_occupancy",
+})
+
+
+def _normalise_multiselect(
+    name: str, value, allowed: frozenset,
+) -> list[str] | None:
+    """Normalise a multi-value filter into an ordered, deduplicated token list.
+
+    Accepts ``None`` (no restriction), a list/tuple of strings, or a bare
+    string (treated as a one-element list). Each value is stripped and
+    lowercased, then checked against ``allowed``. Returns the normalised list
+    (order preserved, duplicates removed), or ``None`` when ``value`` is
+    ``None``. Raises ``ValueError`` on wrong types or unknown tokens.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError(
+            f"{name} must be a non-empty list of strings or None, "
+            f"got {value!r}."
+        )
+    normalized: list[str] = []
+    invalid: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                f"{name} must contain only non-empty strings, got {item!r}."
+            )
+        token = item.strip().lower()
+        if token not in allowed:
+            invalid.append(item)
+            continue
+        if token not in normalized:
+            normalized.append(token)
+    if invalid:
+        raise ValueError(
+            f"{name} contains invalid value(s): {', '.join(repr(v) for v in invalid)}. "
+            f"Valid options: {', '.join(sorted(allowed))}."
+        )
+    return normalized
+
 
 def _flatten_filter_file(raw: dict, path: Path) -> dict:
     """Normalise a parsed filter file into a flat ``{key: value}`` mapping.
@@ -107,7 +232,8 @@ def _flatten_filter_file(raw: dict, path: Path) -> dict:
         return raw
 
     unknown_top = sorted(
-        key for key in raw if key not in (_REQUIRED_SECTION, _OPTIONAL_SECTION)
+        key for key in raw
+        if key not in (_REQUIRED_SECTION, _OPTIONAL_SECTION) + _DOCUMENTATION_KEYS
     )
     if unknown_top:
         raise ValueError(
@@ -134,6 +260,8 @@ def _flatten_filter_file(raw: dict, path: Path) -> dict:
             else _REQUIRED_FILTER_KEYS
         )
         for key, value in body.items():
+            if key in _DOCUMENTATION_KEYS:
+                continue
             if key in other:
                 raise ValueError(
                     f'Filter file {path}: "{key}" belongs in the '
@@ -173,10 +301,23 @@ class FilterConfig:
     energy_labels: list[str] | None = None
     transaction_type: str | None = None
     radius_km: int | None = None
-    construction_type: str | None = None
+    selected_area: str | None = None
+    construction_type: list[str] | None = None
     construction_periods: list[str] | None = None
+    object_type: list[str] | None = None
+    bathrooms_min: int | None = None
+    bathrooms_max: int | None = None
+    garage_capacity_min: int | None = None
+    garage_capacity_max: int | None = None
+    exterior_space_type: list[str] | None = None
+    exterior_space_garden_orientation: list[str] | None = None
     garden: bool | None = None
     garden_size_min: int | None = None
+    zoning: list[str] | None = None
+    parking_facility: list[str] | None = None
+    garage_type: list[str] | None = None
+    accessibility: list[str] | None = None
+    amenities: list[str] | None = None
     availability: str | None = None
     sort: str | None = None
 
@@ -200,6 +341,10 @@ class FilterConfig:
             "rooms_max",
             "plot_size_min",
             "plot_size_max",
+            "bathrooms_min",
+            "bathrooms_max",
+            "garage_capacity_min",
+            "garage_capacity_max",
         ):
             value = getattr(self, name)
             if value is not None and type(value) is not int:
@@ -221,6 +366,8 @@ class FilterConfig:
             ("living_area_min", "living_area_max"),
             ("rooms_min", "rooms_max"),
             ("plot_size_min", "plot_size_max"),
+            ("bathrooms_min", "bathrooms_max"),
+            ("garage_capacity_min", "garage_capacity_max"),
         ):
             lo = getattr(self, lo_name)
             hi = getattr(self, hi_name)
@@ -279,18 +426,63 @@ class FilterConfig:
                 )
 
         if self.construction_type is not None:
-            if not isinstance(self.construction_type, str) or not self.construction_type.strip():
+            if isinstance(self.construction_type, str):
+                raw_values = [self.construction_type]
+            elif isinstance(self.construction_type, (list, tuple)):
+                raw_values = list(self.construction_type)
+            else:
                 raise ValueError(
-                    "construction_type must be a non-empty string or None, "
-                    f"got {self.construction_type!r}."
+                    "construction_type must be a list of strings, a single "
+                    f"string, or None, got {self.construction_type!r}."
                 )
-            normalized = self.construction_type.strip().lower()
-            if normalized not in ("existing", "new"):
+            if not raw_values:
                 raise ValueError(
-                    "construction_type must be 'existing' or 'new' (or None), "
-                    f"got {self.construction_type!r}."
+                    "construction_type must be a non-empty list of strings "
+                    f"or None, got {self.construction_type!r}."
                 )
-            object.__setattr__(self, "construction_type", normalized)
+            normalized_ct: list[str] = []
+            for item in raw_values:
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError(
+                        "construction_type must contain only non-empty strings, "
+                        f"got {item!r}."
+                    )
+                token = item.strip().lower()
+                token = _CONSTRUCTION_TYPE_LEGACY_MAP.get(token, token)
+                if token not in _CONSTRUCTION_TYPE_VALID:
+                    raise ValueError(
+                        "construction_type contains invalid value(s): "
+                        f"{item!r}. Valid options: "
+                        f"{', '.join(sorted(_CONSTRUCTION_TYPE_VALID))} "
+                        "(legacy 'existing'/'new' are accepted and mapped to "
+                        "'resale'/'newly_built')."
+                    )
+                if token not in normalized_ct:
+                    normalized_ct.append(token)
+            object.__setattr__(self, "construction_type", normalized_ct)
+
+        # New multi-value filters — validated against a fixed Funda vocabulary,
+        # matching the construction_periods/transaction_type convention.
+        for name, allowed in (
+            ("object_type", _OBJECT_TYPES),
+            ("exterior_space_type", _EXTERIOR_SPACE_TYPES),
+            ("exterior_space_garden_orientation", _EXTERIOR_SPACE_GARDEN_ORIENTATIONS),
+            ("zoning", _ZONING_VALUES),
+            ("parking_facility", _PARKING_FACILITIES),
+            ("garage_type", _GARAGE_TYPES),
+            ("accessibility", _ACCESSIBILITY_VALUES),
+            ("amenities", _AMENITIES),
+        ):
+            normalized = _normalise_multiselect(name, getattr(self, name), allowed)
+            if normalized is not None:
+                object.__setattr__(self, name, normalized)
+
+        if self.selected_area is not None:
+            if not isinstance(self.selected_area, str) or not self.selected_area.strip():
+                raise ValueError(
+                    "selected_area must be a non-empty string or None, "
+                    f"got {self.selected_area!r}."
+                )
 
         if self.construction_periods is not None:
             if not isinstance(self.construction_periods, list) or not self.construction_periods:
@@ -318,10 +510,17 @@ class FilterConfig:
                 raise ValueError(
                     f"garden_size_min must not be negative, got {self.garden_size_min!r}."
                 )
-            if self.garden is not True:
+            garden_selected = self.garden is True or (
+                self.exterior_space_type is not None
+                and "garden" in self.exterior_space_type
+            )
+            if not garden_selected:
                 raise ValueError(
-                    "garden_size_min requires garden=true (exterior_space_type=garden); "
-                    f"got garden={self.garden!r} with garden_size_min={self.garden_size_min!r}."
+                    "garden_size_min requires a garden to be selected "
+                    "(garden=true or \"garden\" in exterior_space_type); "
+                    f"got garden={self.garden!r}, "
+                    f"exterior_space_type={self.exterior_space_type!r} "
+                    f"with garden_size_min={self.garden_size_min!r}."
                 )
 
         for name in ("availability", "sort"):
@@ -357,6 +556,7 @@ class FilterConfig:
             )
 
         flat = _flatten_filter_file(raw, path)
+        flat = {k: v for k, v in flat.items() if k not in _DOCUMENTATION_KEYS}
 
         unknown = sorted(key for key in flat if key not in _FILTER_KEYS)
         if unknown:
@@ -380,10 +580,23 @@ class FilterConfig:
             energy_labels=flat.get("energy_labels"),
             transaction_type=flat.get("transaction_type"),
             radius_km=flat.get("radius_km"),
+            selected_area=flat.get("selected_area", "amsterdam"),
             construction_type=flat.get("construction_type"),
             construction_periods=flat.get("construction_periods"),
+            object_type=flat.get("object_type"),
+            bathrooms_min=flat.get("bathrooms_min"),
+            bathrooms_max=flat.get("bathrooms_max"),
+            garage_capacity_min=flat.get("garage_capacity_min"),
+            garage_capacity_max=flat.get("garage_capacity_max"),
+            exterior_space_type=flat.get("exterior_space_type"),
+            exterior_space_garden_orientation=flat.get("exterior_space_garden_orientation"),
             garden=flat.get("garden"),
             garden_size_min=flat.get("garden_size_min"),
+            zoning=flat.get("zoning"),
+            parking_facility=flat.get("parking_facility"),
+            garage_type=flat.get("garage_type"),
+            accessibility=flat.get("accessibility"),
+            amenities=flat.get("amenities"),
             availability=flat.get("availability"),
             sort=flat.get("sort"),
         )

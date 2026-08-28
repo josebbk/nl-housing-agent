@@ -163,6 +163,7 @@ read without touching source code:
 
 ```json
 {
+    "note": "Human-editable housing search filters. See the table below for types, defaults, and valid values.",
     "required": {
         "price_min": 550000,
         "price_max": 750000,
@@ -170,6 +171,7 @@ read without touching source code:
         "living_area_min": 100
     },
     "optional": {
+        "note": "null/[] = no restriction. Multi-value filters are ordered JSON arrays; ranged filters use _min/_max pairs (null = open bound).",
         "bedrooms_max": null,
         "living_area_max": null,
         "rooms_min": null,
@@ -180,10 +182,23 @@ read without touching source code:
         "energy_labels": ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"],
         "transaction_type": null,
         "radius_km": 10,
+        "selected_area": "amsterdam",
         "construction_type": null,
         "construction_periods": ["1971-1980", "1981-1990", "1991-2000", "2001-2010", "2011-2020", "after_2020"],
+        "object_type": null,
+        "bathrooms_min": null,
+        "bathrooms_max": null,
+        "garage_capacity_min": null,
+        "garage_capacity_max": null,
+        "exterior_space_type": null,
+        "exterior_space_garden_orientation": null,
         "garden": true,
         "garden_size_min": 70,
+        "zoning": null,
+        "parking_facility": null,
+        "garage_type": null,
+        "accessibility": null,
+        "amenities": null,
         "availability": "available",
         "sort": "publish_date_utc_desc"
     }
@@ -191,33 +206,47 @@ read without touching source code:
 ```
 
 * `required` — the four Phase 1 base criteria, kept at their current values.
-* `optional` — every optional preference key; `null` means "no restriction",
-  so an unused preference can simply be left as `null`.
+* `optional` — every optional preference key; `null` (or `[]` for multi-value
+  filters) means "no restriction", so an unused preference can simply be left
+  as `null`.
 
 Each key controls the housing search criteria:
 
-| Key                    | Type       | Default        | Meaning                                        |
-| ---------------------- | ---------- | -------------- | ---------------------------------------------- |
-| `price_min`            | int        | 550000         | Minimum asking price (€)                       |
-| `price_max`            | int        | 750000         | Maximum asking price (€)                       |
-| `bedrooms_min`         | int        | 3              | Minimum bedrooms                               |
-| `bedrooms_max`         | int / null | none           | Maximum bedrooms                               |
-| `living_area_min`      | int        | 100            | Minimum living area (m²)                       |
-| `living_area_max`      | int / null | none           | Maximum living area (m²)                       |
-| `rooms_min`            | int / null | none           | Minimum total rooms                            |
-| `rooms_max`            | int / null | none           | Maximum total rooms                            |
-| `plot_size_min`        | int / null | none           | Minimum plot size (m²)                         |
-| `plot_size_max`        | int / null | none           | Maximum plot size (m²)                         |
-| `property_type`        | str / null | none           | Required property type, e.g. `appartement`     |
-| `energy_labels`        | list / null | none          | Ordered energy labels sent to Funda verbatim   |
-| `transaction_type`     | str / null | none           | `koop` (for sale) or `huur` (rent)             |
-| `radius_km`            | int / null | none           | Search radius (km); emitted as `radius_search` |
-| `construction_type`    | str / null | none           | Exact construction type: `existing`/`new`      |
-| `construction_periods` | list / null | none          | Human-readable build-year periods (mapped)     |
-| `garden`               | bool / null | none           | `true` adds `exterior_space_type=garden`       |
-| `garden_size_min`      | int / null | none           | Minimum garden size (m²); requires `garden`    |
-| `availability`         | str / null | none           | Free-string `availability` value               |
-| `sort`                 | str / null | none           | Free-string `sort` value                       |
+| Key                                  | Type       | Default    | Meaning                                        |
+| ------------------------------------ | ---------- | ---------- | ---------------------------------------------- |
+| `price_min`                          | int        | 550000     | Minimum asking price (€)                       |
+| `price_max`                          | int        | 750000     | Maximum asking price (€)                       |
+| `bedrooms_min`                       | int        | 3          | Minimum bedrooms                               |
+| `bedrooms_max`                       | int / null | none       | Maximum bedrooms                               |
+| `living_area_min`                    | int        | 100        | Minimum living area (m²)                       |
+| `living_area_max`                    | int / null | none       | Maximum living area (m²)                       |
+| `rooms_min`                          | int / null | none       | Minimum total rooms                            |
+| `rooms_max`                          | int / null | none       | Maximum total rooms                            |
+| `plot_size_min`                      | int / null | none       | Minimum plot size (m²); also emitted as `plot_area` on the search URL |
+| `plot_size_max`                      | int / null | none       | Maximum plot size (m²)                         |
+| `property_type`                      | str / null | none       | Required property type, e.g. `appartement`     |
+| `energy_labels`                      | list / null | none      | Ordered energy labels sent to Funda verbatim   |
+| `transaction_type`                   | str / null | none       | `koop` (for sale) or `huur` (rent)             |
+| `radius_km`                          | int / null | none       | Search radius (km); emitted as `radius_search` |
+| `selected_area`                      | str / null | `amsterdam` | Area slug (e.g. `amsterdam`, `nl`)            |
+| `construction_type`                  | list / null | none      | Construction types: `newly_built`/`resale` (legacy `new`/`existing` mapped) |
+| `construction_periods`               | list / null | none      | Human-readable build-year periods (mapped)     |
+| `object_type`                        | list / null | none       | Object types: `apartment`, `house`             |
+| `bathrooms_min`                      | int / null | none       | Minimum bathrooms                              |
+| `bathrooms_max`                      | int / null | none       | Maximum bathrooms                              |
+| `garage_capacity_min`                | int / null | none       | Minimum garage capacity                        |
+| `garage_capacity_max`                | int / null | none       | Maximum garage capacity                        |
+| `exterior_space_type`                | list / null | none       | Exterior spaces: `balcony`, `terrace`, `garden` |
+| `exterior_space_garden_orientation`  | list / null | none       | Garden orientations: `north`, `east`, `south`, `west` |
+| `garden`                             | bool / null | none       | Legacy shorthand: `true` adds `garden` to `exterior_space_type` |
+| `garden_size_min`                    | int / null | none       | Minimum garden size (m²); requires a garden selected |
+| `zoning`                             | list / null | none       | Zoning: `residential`, `recreational`          |
+| `parking_facility`                   | list / null | none       | Parking facility types (see Architecture.md vocabulary table) |
+| `garage_type`                        | list / null | none       | Garage types (see Architecture.md vocabulary table) |
+| `accessibility`                      | list / null | none       | Accessibility features (see Architecture.md vocabulary table) |
+| `amenities`                          | list / null | none       | Amenities (see Architecture.md vocabulary table) |
+| `availability`                       | str / null | none       | Free-string `availability` value               |
+| `sort`                               | str / null | none       | Free-string `sort` value                       |
 
 > **Superseded:** the `energy_label_min` / `energy_label_max` keys were
 > removed and replaced by the single ordered `energy_labels` list. The
@@ -225,26 +254,35 @@ Each key controls the housing search criteria:
 > A+++++`) is preserved exactly as it appeared in the authoritative source
 > URL, not sorted ordinally — do not silently reorder it.
 
-The `null` optional values mean "no preference filter". Missing keys fall
-back to the Phase 1 defaults (€550,000–€750,000, ≥3 bedrooms, ≥100 m²).
+The `null` optional values mean "no preference filter" (an empty `[]` for a
+multi-value filter is also rejected, matching the `energy_labels`/`construction_periods`
+convention — use `null` to mean "no restriction"). Missing keys fall back to
+the Phase 1 defaults (€550,000–€750,000, ≥3 bedrooms, ≥100 m²).
 Ranged filters accept `_min`/`_max` pairs; a `null` bound leaves that side
-open-ended. `rooms_min`/`rooms_max`, `radius_km`, `construction_type`,
-`energy_labels`, `construction_periods`, `garden`, `garden_size_min`,
-`availability`, and `sort` are applied to the Funda search URL only (not the
-local matching query). `radius_km` is emitted as its own `radius_search`
-parameter; `selected_area` stays a plain area slug. `construction_periods`
+open-ended. Search-level filters are applied to the Funda search URL only (not
+the local matching query); these are `rooms_min`/`rooms_max`, `radius_km`,
+`selected_area`, `construction_type`, `energy_labels`, `construction_periods`,
+`object_type`, `bathrooms_min`/`max`, `garage_capacity_min`/`max`,
+`exterior_space_type`, `exterior_space_garden_orientation`, `zoning`,
+`parking_facility`, `garage_type`, `accessibility`, `amenities`, `garden`,
+`garden_size_min`, `availability`, and `sort`. `plot_size_min`/`max` is used
+both in the storage matching query and as the `plot_area` search-URL
+parameter. `radius_km` is emitted as its own `radius_search` parameter;
+`selected_area` is a plain area slug (default `amsterdam`). `construction_periods`
 uses human-readable keys that `src/config.py` maps to Funda's internal codes
 via `CONSTRUCTION_PERIOD_MAP`.
-Invalid values or unknown keys cause the run to fail loudly rather than being
-silently coerced. Each key must appear in its own section (`required` for the
-four base criteria, `optional` for everything else): a key placed in the
-wrong section, an unknown key inside a section, or a mix of sectioned and
-flat top-level keys is also rejected with a clear error. The older flat
-layout (all filter keys at the top level, no sections) is still accepted for
-backward compatibility. The file is resolved from the project root regardless
-of the working directory, so cron/systemd/tmux execution finds it
-automatically. See `src/config.py` for the authoritative key list and
-validation rules.
+
+The `construction_type` field is multi-value (Funda tokens `newly_built` /
+`resale`); the legacy `existing`/`new` are accepted and mapped. The `garden`
+boolean is a legacy shorthand for `exterior_space_type` containing `"garden"`.
+A `note` (or `_comment`) key is tolerated anywhere in the file for
+documentation; any other unknown key, an invalid value, or a key placed in the
+wrong section causes the run to fail loudly rather than being silently
+coerced. The older flat layout (all filter keys at the top level, no sections)
+is still accepted for backward compatibility. The file is resolved from the
+project root regardless of the working directory, so cron/systemd/tmux
+execution finds it automatically. See `src/config.py` for the authoritative
+key list and validation rules.
 
 The real `.env` file must never be committed to Git.
 

@@ -1,4 +1,5 @@
 {
+    "note": "Human-editable housing search filters. `required` holds the four Phase 1 base criteria; `optional` holds every preference (null/[] = no restriction). Multi-value filters take a JSON array of strings; ranged filters take `_min`/`_max` pairs where null leaves that side open. Valid values, defaults, and encoding rules are documented in Architecture.md 'Phase 2 — Configurable Search Filters'.",
     "required": {
         "price_min": 550000,
         "price_max": 750000,
@@ -6,6 +7,7 @@
         "living_area_min": 100
     },
     "optional": {
+        "note": "Ranged filters: null on either side = open bound (e.g. `price=550000-`, `garage_capacity=-5`). Multi-value filters: ordered JSON arrays of strings, comma-joined and percent-encoded (null/[] = no restriction); `construction_type` also accepts a bare string (legacy `existing`/`new` are mapped to `resale`/`newly_built`). `garden` (bool) is a legacy shorthand for `exterior_space_type` containing \"garden\"; `garden_size_min` applies only when a garden is selected.",
         "bedrooms_max": null,
         "living_area_max": null,
         "rooms_min": null,
@@ -16,10 +18,23 @@
         "energy_labels": ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"],
         "transaction_type": null,
         "radius_km": 10,
+        "selected_area": "amsterdam",
         "construction_type": null,
         "construction_periods": ["1971-1980", "1981-1990", "1991-2000", "2001-2010", "2011-2020", "after_2020"],
+        "object_type": null,
+        "bathrooms_min": null,
+        "bathrooms_max": null,
+        "garage_capacity_min": null,
+        "garage_capacity_max": null,
+        "exterior_space_type": null,
+        "exterior_space_garden_orientation": null,
         "garden": true,
         "garden_size_min": 70,
+        "zoning": null,
+        "parking_facility": null,
+        "garage_type": null,
+        "accessibility": null,
+        "amenities": null,
         "availability": "available",
         "sort": "publish_date_utc_desc"
     }

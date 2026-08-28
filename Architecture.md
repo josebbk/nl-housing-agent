@@ -892,6 +892,7 @@ the Phase 1 values:
 
 ```json
 {
+    "note": "Human-editable housing search filters. See the table below and the per-key docs for types, defaults, and valid values.",
     "required": {
         "price_min": 550000,
         "price_max": 750000,
@@ -899,6 +900,7 @@ the Phase 1 values:
         "living_area_min": 100
     },
     "optional": {
+        "note": "null/[] = no restriction. Multi-value filters are ordered JSON arrays; ranged filters use _min/_max pairs (null = open bound).",
         "bedrooms_max": null,
         "living_area_max": null,
         "rooms_min": null,
@@ -909,38 +911,75 @@ the Phase 1 values:
         "energy_labels": ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"],
         "transaction_type": null,
         "radius_km": 10,
+        "selected_area": "amsterdam",
         "construction_type": null,
         "construction_periods": ["1971-1980", "1981-1990", "1991-2000", "2001-2010", "2011-2020", "after_2020"],
+        "object_type": null,
+        "bathrooms_min": null,
+        "bathrooms_max": null,
+        "garage_capacity_min": null,
+        "garage_capacity_max": null,
+        "exterior_space_type": null,
+        "exterior_space_garden_orientation": null,
         "garden": true,
         "garden_size_min": 70,
+        "zoning": null,
+        "parking_facility": null,
+        "garage_type": null,
+        "accessibility": null,
+        "amenities": null,
         "availability": "available",
         "sort": "publish_date_utc_desc"
     }
 }
 ```
 
-| Key                    | Type       | Default        | Meaning                                        |
-| ---------------------- | ---------- | -------------- | ---------------------------------------------- |
-| `price_min`            | int        | 550000         | Minimum asking price (€)                       |
-| `price_max`            | int        | 750000         | Maximum asking price (€)                       |
-| `bedrooms_min`         | int        | 3              | Minimum bedrooms                               |
-| `bedrooms_max`         | int / null | none           | Maximum bedrooms                               |
-| `living_area_min`      | int        | 100            | Minimum living area (m²)                       |
-| `living_area_max`      | int / null | none           | Maximum living area (m²)                       |
-| `rooms_min`            | int / null | none           | Minimum total rooms                            |
-| `rooms_max`            | int / null | none           | Maximum total rooms                            |
-| `plot_size_min`        | int / null | none           | Minimum plot size (m²)                         |
-| `plot_size_max`        | int / null | none           | Maximum plot size (m²)                         |
-| `property_type`        | str / null | none           | Required property type, e.g. `appartement`     |
-| `energy_labels`        | list / null | none          | Ordered energy labels sent to Funda verbatim   |
-| `transaction_type`     | str / null | none           | `koop` (for sale) or `huur` (rent)             |
-| `radius_km`            | int / null | none           | Search radius (km); emitted as `radius_search` |
-| `construction_type`    | str / null | none           | Exact construction type: `existing`/`new`      |
-| `construction_periods` | list / null | none          | Human-readable build-year periods (mapped)     |
-| `garden`               | bool / null | none          | `true` adds `exterior_space_type=garden`       |
-| `garden_size_min`      | int / null | none           | Minimum garden size (m²); requires `garden`    |
-| `availability`         | str / null | none           | Free-string `availability` value               |
-| `sort`                 | str / null | none           | Free-string `sort` value                       |
+| Key                                  | Type       | Default    | Meaning                                        |
+| ------------------------------------ | ---------- | ---------- | ---------------------------------------------- |
+| `price_min`                          | int        | 550000     | Minimum asking price (€)                       |
+| `price_max`                          | int        | 750000     | Maximum asking price (€)                       |
+| `bedrooms_min`                       | int        | 3          | Minimum bedrooms                               |
+| `bedrooms_max`                       | int / null | none       | Maximum bedrooms                               |
+| `living_area_min`                    | int        | 100        | Minimum living area (m²)                       |
+| `living_area_max`                    | int / null | none       | Maximum living area (m²)                       |
+| `rooms_min`                          | int / null | none       | Minimum total rooms                            |
+| `rooms_max`                          | int / null | none       | Maximum total rooms                            |
+| `plot_size_min`                      | int / null | none       | Minimum plot size (m²); also emitted as `plot_area` on the search URL |
+| `plot_size_max`                      | int / null | none       | Maximum plot size (m²)                         |
+| `property_type`                      | str / null | none       | Required property type, e.g. `appartement`     |
+| `energy_labels`                      | list / null | none      | Ordered energy labels sent to Funda verbatim   |
+| `transaction_type`                   | str / null | none       | `koop` (for sale) or `huur` (rent)             |
+| `radius_km`                          | int / null | none       | Search radius (km); emitted as `radius_search` |
+| `selected_area`                      | str / null | `amsterdam` | Area slug (e.g. `amsterdam`, `nl`); emitted as `selected_area` |
+| `construction_type`                  | list / null | none      | Construction types: `newly_built`/`resale` (legacy `new`/`existing` mapped) |
+| `construction_periods`               | list / null | none      | Human-readable build-year periods (mapped)     |
+| `object_type`                        | list / null | none       | Object types: `apartment`, `house`             |
+| `bathrooms_min`                      | int / null | none       | Minimum bathrooms                              |
+| `bathrooms_max`                      | int / null | none       | Maximum bathrooms                              |
+| `garage_capacity_min`                | int / null | none       | Minimum garage capacity                        |
+| `garage_capacity_max`                | int / null | none       | Maximum garage capacity                        |
+| `exterior_space_type`                | list / null | none       | Exterior spaces: `balcony`, `terrace`, `garden` |
+| `exterior_space_garden_orientation`  | list / null | none       | Garden orientations: `north`, `east`, `south`, `west` |
+| `garden`                             | bool / null | none       | Legacy shorthand: `true` adds `garden` to `exterior_space_type` |
+| `garden_size_min`                    | int / null | none       | Minimum garden size (m²); requires a garden selected |
+| `zoning`                             | list / null | none       | Zoning: `residential`, `recreational`          |
+| `parking_facility`                   | list / null | none       | Parking facility types (see vocabulary below)  |
+| `garage_type`                        | list / null | none       | Garage types (see vocabulary below)            |
+| `accessibility`                      | list / null | none       | Accessibility features (see vocabulary below)  |
+| `amenities`                          | list / null | none       | Amenities (see vocabulary below)               |
+| `availability`                       | str / null | none       | Free-string `availability` value               |
+| `sort`                               | str / null | none       | Free-string `sort` value                       |
+
+The `selected_area` key defaults to `amsterdam` (preserving the Phase 1
+behavior) rather than `null`, unlike the other optional keys. Its value is a
+plain area slug; it is never combined with `radius_km`.
+
+The `construction_type` field was **converted from a single value to a
+multi-value list**. Funda's current tokens are `newly_built` and `resale`;
+the old `existing`/`new` vocabulary referred to the same concept and is
+accepted (and mapped to `resale`/`newly_built`) for backward compatibility.
+A bare string is accepted as a one-element list. See the "conflict
+resolution" note below for the reasoning.
 
 > **Superseded:** the `energy_label_min` / `energy_label_max` keys were
 > removed and replaced by the single ordered `energy_labels` list. The
@@ -980,17 +1019,38 @@ Several filters are **single-value** (no range makes sense):
   > `radius_km` was folded into `selected_area` as a JSON-array string
   > `["amsterdam,{N}km"]` — was removed. `selected_area` is now always a
   > plain slug and the radius travels in `radius_search` instead.
-* `construction_type` — an exact-match categorical value (`existing` or
-  `new`). Set to `null` for no restriction.
+* `construction_type` — a multi-value list of construction types using
+  Funda's current tokens `newly_built` / `resale` (the legacy `new` /
+  `existing` are accepted and mapped). Set to `null` for no restriction.
+* `selected_area` — a plain area slug (default `amsterdam`), emitted as
+  `selected_area=…`. Distinct from `radius_km` (which is its own
+  `radius_search` parameter).
 * `energy_labels` — an ordered list of energy labels, sent to Funda
   verbatim as `energy_label=…` (each label percent-encoded, comma-joined).
   Search-level only.
 * `construction_periods` — a list of human-readable build-year period keys,
   mapped to Funda's internal codes (see `CONSTRUCTION_PERIOD_MAP` below).
   Search-level only.
-* `garden` — a boolean; `true` emits `exterior_space_type=garden`.
+* `garden` — a boolean legacy shorthand; `true` is equivalent to including
+  `"garden"` in `exterior_space_type`. The URL builder merges the two into a
+  single `exterior_space_type` parameter (see the reconciliation note below).
 * `garden_size_min` — a non-negative integer; emits
-  `exterior_space_garden_size={min}-` and requires `garden=true`.
+  `exterior_space_garden_size={min}-` and requires a garden to be selected
+  (`garden=true` or `"garden"` in `exterior_space_type`).
+* `object_type` — a multi-value list (`apartment`, `house`), emitted as
+  `object_type=…`.
+* `bathrooms` — ranged (`bathrooms_min`/`bathrooms_max`), emitted as
+  `bathrooms=…`.
+* `garage_capacity` — ranged (`garage_capacity_min`/`garage_capacity_max`),
+  emitted as `garage_capacity=…`.
+* `exterior_space_type` — a multi-value list (`balcony`, `terrace`, `garden`).
+* `exterior_space_garden_orientation` — a multi-value list (`north`, `east`,
+  `south`, `west`).
+* `zoning` — a multi-value list (`residential`, `recreational`).
+* `parking_facility` — a multi-value list (see vocabulary table below).
+* `garage_type` — a multi-value list (see vocabulary table below).
+* `accessibility` — a multi-value list (see vocabulary table below).
+* `amenities` — a multi-value list (see vocabulary table below).
 * `availability` — a free-string value emitted as `availability=…`.
 * `sort` — a free-string value emitted as `sort=…`.
 
@@ -1013,10 +1073,23 @@ class FilterConfig:
     energy_labels: list[str] | None = None
     transaction_type: str | None = None
     radius_km: int | None = None
-    construction_type: str | None = None
+    selected_area: str | None = None
+    construction_type: list[str] | None = None
     construction_periods: list[str] | None = None
+    object_type: list[str] | None = None
+    bathrooms_min: int | None = None
+    bathrooms_max: int | None = None
+    garage_capacity_min: int | None = None
+    garage_capacity_max: int | None = None
+    exterior_space_type: list[str] | None = None
+    exterior_space_garden_orientation: list[str] | None = None
     garden: bool | None = None
     garden_size_min: int | None = None
+    zoning: list[str] | None = None
+    parking_facility: list[str] | None = None
+    garage_type: list[str] | None = None
+    accessibility: list[str] | None = None
+    amenities: list[str] | None = None
     availability: str | None = None
     sort: str | None = None
 ```
@@ -1043,6 +1116,55 @@ Every configured key must exist in this map; an invalid key raises a
 to Funda codes happens in `main.py` (and in the URL-building test), not in
 `FilterConfig` itself.
 
+The multi-value filters added by the full-search-parameter-coverage task
+carry Funda's English wire tokens verbatim (they are already
+human-readable, so no mapping table is needed), but each is validated
+against a fixed vocabulary. Values are stripped, lowercased, ordered as
+configured, and de-duplicated. The valid tokens are:
+
+| Key                                 | Valid tokens                                                                                         |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `object_type`                       | `apartment`, `house`                                                                                 |
+| `construction_type`                 | `newly_built`, `resale` (legacy `new`/`existing` mapped)                                             |
+| `exterior_space_type`               | `balcony`, `terrace`, `garden`                                                                       |
+| `exterior_space_garden_orientation` | `north`, `east`, `south`, `west`                                                                     |
+| `zoning`                            | `residential`, `recreational`                                                                        |
+| `parking_facility`                  | `on_private_property`, `on_enclosed_property`, `public_parking`, `paid_parking`, `parking_garage`, `parking_permits` |
+| `garage_type`                       | `lean_to`, `lock_up`, `garage_and_carport`, `built_in`, `underground`, `basement`, `detached`, `garage_possible`, `carport`, `parking_space`, `all_garages` |
+| `accessibility`                     | `lift`, `single_storey`, `accessible_for_the_disabled`, `accessible_for_the_elderly`, `adapted_home`, `ground_floor` |
+| `amenities`                         | `renewable_energy`, `central_heating_boiler`, `swimming_pool`, `bathtub`, `fireplace`, `fixer_upper`, `double_occupancy` |
+
+> **Flagged for owner verification:** these vocabularies were captured from
+> the authoritative reference URL. They could not be re-validated against
+> the live Funda search UI in this environment (Funda served an Akamai
+> bot-check), so the owner should confirm the token set is complete before
+> relying on values not listed above.
+
+#### `construction_type` conflict resolution
+
+The original `construction_type` field was a single categorical value
+(`existing` / `new`). The authoritative reference URL shows Funda's actual
+parameter as **multi-value** (`construction_type=newly_built,resale`). The
+two vocabularies describe the same concept (`existing` ≈ resale build,
+`new` ≈ newly built), so rather than silently pick one the field was:
+
+* converted to a multi-value list,
+* switched to Funda's current tokens (`newly_built`, `resale`),
+* made backward-compatible: a bare string is accepted as a one-element list,
+  and the legacy `existing`/`new` tokens are mapped to `resale`/`newly_built`.
+
+#### `exterior_space_type` / `garden` reconciliation
+
+`exterior_space_type` (multi-value: `balcony`, `terrace`, `garden`) overlaps
+with the pre-existing boolean `garden` field (`garden=true` emitted
+`exterior_space_type=garden`). To avoid two ways of expressing the same
+filter, `garden` is retained as a **legacy shorthand**: the URL builder
+merges `garden=true` with the `exterior_space_type` list into a single
+`exterior_space_type` parameter (de-duplicated, order-preserving).
+`garden_size_min` still applies only when a garden is actually selected
+(`garden=true` or `"garden"` in `exterior_space_type`). This preserves the
+existing default behavior (`garden: true` + `garden_size_min: 70`) exactly.
+
 * `FilterConfig` is immutable (`frozen=True`); validation runs at
   construction in `__post_init__`.
 * `DEFAULT_FILTERS` is a module-level `FilterConfig` holding the Phase 1
@@ -1063,12 +1185,17 @@ Validation rules:
 * `price_min <= price_max`
 * numeric minimums (`price_min`, `bedrooms_min`, `living_area_min`,
   `plot_size_min`) must be non-negative
-* for each ranged pair (`bedrooms`, `living_area`, `rooms`, `plot_size`),
-  when both bounds are set the minimum must be `<=` the maximum
+* for each ranged pair (`bedrooms`, `living_area`, `rooms`, `plot_size`,
+  `bathrooms`, `garage_capacity`), when both bounds are set the minimum must
+  be `<=` the maximum
 * `radius_km`, when set, must be a positive integer (rejects `0`, negatives,
   non-integers, and booleans)
 * `transaction_type`, when set, must be `koop` or `huur` (lowercase)
-* `construction_type`, when set, must be `existing` or `new` (lowercase)
+* `construction_type`, when set, must be a non-empty list of strings (a bare
+  string is accepted as a one-element list); every token must be
+  `newly_built` or `resale`, with the legacy `new`/`existing` mapped
+  accordingly
+* `selected_area`, when set, must be a non-empty string
 * `property_type`, when set, must be a non-empty string
 * `energy_labels`, when set, must be a non-empty list of non-empty strings.
   No further validation against a fixed vocabulary — Funda accepts whatever
@@ -1076,11 +1203,19 @@ Validation rules:
 * `construction_periods`, when set, must be a non-empty list of strings, and
   every key must exist in `CONSTRUCTION_PERIOD_MAP` (an invalid key raises
   `ValueError` listing the invalid key(s) and the valid options)
+* the new multi-value filters (`object_type`, `exterior_space_type`,
+  `exterior_space_garden_orientation`, `zoning`, `parking_facility`,
+  `garage_type`, `accessibility`, `amenities`), when set, must be a
+  non-empty list of non-empty strings, and every token must exist in the
+  corresponding vocabulary table above (an invalid token raises `ValueError`)
 * `garden`, when set, must be a boolean
-* `garden_size_min`, when set, must be a non-negative integer and requires
-  `garden=true` (a `garden_size_min` without `garden` raises `ValueError`)
+* `garden_size_min`, when set, must be a non-negative integer and requires a
+  garden to be selected (`garden=true` or `"garden"` in
+  `exterior_space_type`); otherwise it raises `ValueError`
 * `availability` and `sort`, when set, must be non-empty strings (free-form,
   no fixed vocabulary)
+* documentation keys (`note`, `_comment`) are tolerated (ignored) by the
+  loader; any other unknown key still raises `ValueError`
 * the file must be a JSON object; invalid JSON or an unreadable/missing file
   raises `ValueError`
 
@@ -1117,11 +1252,15 @@ fetch_unnotified_matching_listings(
 > with it. `config/preferences.json`'s `energy_label_scale` key and
 > `scoring.py` were **not** touched — that scale is used by the scoring
 > formula and is unrelated to the search filter.
-* `rooms_min`/`rooms_max`, `radius_km`, `construction_type`,
-  `energy_labels`, `construction_periods`, `garden`, `garden_size_min`,
+* `rooms_min`/`rooms_max`, `radius_km`, `selected_area`, `construction_type`,
+  `energy_labels`, `construction_periods`, `object_type`, `bathrooms_min`/`max`,
+  `garage_capacity_min`/`max`, `exterior_space_type`,
+  `exterior_space_garden_orientation`, `zoning`, `parking_facility`,
+  `garage_type`, `accessibility`, `amenities`, `garden`, `garden_size_min`,
   `availability`, and `sort` are **search-level** filters: they are applied
   to the Funda search URL, not the storage query (see `main.py`
-  orchestration below).
+  orchestration below). `plot_size_min`/`max` is **both** storage-level
+  (`plot_size_m2 >= ?` / `<= ?`) and search-level (emitted as `plot_area`).
 * NULL semantics: a listing with a NULL value for an optional field never
   satisfies an enabled preference filter (standard SQL comparison).
 
@@ -1130,8 +1269,12 @@ fetch_unnotified_matching_listings(
 * `main()` loads `filters = FilterConfig.from_file()` once at run start.
 * The **search-level** filters are passed to `scrape_funda(...)`:
   `price_min`, `price_max`, `living_area_min`/`max`, `bedrooms_min`/`max`,
-  `rooms_min`/`max`, `radius_km`, `construction_type`, `energy_labels`,
-  `construction_periods` (mapped via `CONSTRUCTION_PERIOD_MAP`), `garden`,
+  `rooms_min`/`max`, `radius_km`, `selected_area` (as `area`),
+  `construction_type`, `energy_labels`, `construction_periods` (mapped via
+  `CONSTRUCTION_PERIOD_MAP`), `object_type`, `plot_size_min`/`max` (as
+  `plot_area`), `bathrooms_min`/`max`, `garage_capacity_min`/`max`,
+  `exterior_space_type`, `exterior_space_garden_orientation`, `zoning`,
+  `parking_facility`, `garage_type`, `accessibility`, `amenities`, `garden`,
   `garden_size_min`, `availability`, `sort`, and `offering_type` (derived
   from `transaction_type`, defaulting to `koop`).
 * The same `filters` object is passed to
@@ -1139,10 +1282,14 @@ fetch_unnotified_matching_listings(
   storage query uses exactly the loaded configuration. The **storage-level**
   filters (`property_type`, `plot_size_min`/`max`, `bedrooms_max`,
   `living_area_max`) are applied in the matching query.
-* Search-level filters (`rooms_min`/`max`, `radius_km`, `construction_type`,
-  `energy_labels`, `construction_periods`, `garden`, `garden_size_min`,
+* Search-level filters (`rooms_min`/`max`, `radius_km`, `selected_area`,
+  `construction_type`, `energy_labels`, `construction_periods`, `object_type`,
+  `bathrooms_min`/`max`, `garage_capacity_min`/`max`, `exterior_space_type`,
+  `exterior_space_garden_orientation`, `zoning`, `parking_facility`,
+  `garage_type`, `accessibility`, `amenities`, `garden`, `garden_size_min`,
   `availability`, `sort`) are **not** passed to the storage query, which does
-  not accept those parameters.
+  not accept those parameters. (`plot_size_min`/`max` is the exception — it
+  is used both in storage and on the search URL.)
 * All Phase 1 orchestration (init_db, insert, notify, mark-as-notified,
   dry-run, exit codes, logging) is unchanged.
 

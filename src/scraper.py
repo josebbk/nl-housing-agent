@@ -75,6 +75,17 @@ def _range_param(name: str, lo: Optional[int], hi: Optional[int]) -> Optional[st
     return f"{name}={lo_s}-{hi_s}"
 
 
+def _join_encoded(values: Optional[list[str]]) -> Optional[str]:
+    """Percent-encode each value (``+`` → ``%2B``) and comma-join them.
+
+    Used for every multi-value search parameter so tokens like ``A+++++`` are
+    encoded correctly and the configured order is preserved verbatim.
+    """
+    if not values:
+        return None
+    return ",".join(urllib.parse.quote(v, safe="") for v in values)
+
+
 def build_search_url(
     area: str = "amsterdam",
     offering_type: str = "koop",
@@ -88,13 +99,27 @@ def build_search_url(
     rooms_min: Optional[int] = None,
     rooms_max: Optional[int] = None,
     radius_km: Optional[int] = None,
-    construction_type: Optional[str] = None,
+    construction_type: Optional[list[str]] = None,
     energy_labels: Optional[list[str]] = None,
     construction_periods: Optional[list[str]] = None,
     garden: Optional[bool] = None,
     garden_size_min: Optional[int] = None,
     availability: Optional[str] = None,
     sort: Optional[str] = None,
+    object_type: Optional[list[str]] = None,
+    plot_area_min: Optional[int] = None,
+    plot_area_max: Optional[int] = None,
+    bathrooms_min: Optional[int] = None,
+    bathrooms_max: Optional[int] = None,
+    garage_capacity_min: Optional[int] = None,
+    garage_capacity_max: Optional[int] = None,
+    exterior_space_type: Optional[list[str]] = None,
+    exterior_space_garden_orientation: Optional[list[str]] = None,
+    zoning: Optional[list[str]] = None,
+    parking_facility: Optional[list[str]] = None,
+    garage_type: Optional[list[str]] = None,
+    accessibility: Optional[list[str]] = None,
+    amenities: Optional[list[str]] = None,
     page: int = 1,
 ) -> str:
     """Build a Funda search URL with the given filters.
@@ -105,22 +130,35 @@ def build_search_url(
         &price={min}-{max}
         &publication_date={n}       (optional: 1, 3, 5, 10, or 30)
         &availability={value}       (optional free string)
+        &object_type={enc,enc,...}  (multi-value, percent-encoded)
         &floor_area={min}-{max}
+        &plot_area={min}-{max}
         &bedrooms={min}-{max}
+        &bathrooms={min}-{max}
         &rooms={min}-{max}
-        &construction_type={existing|new}
+        &construction_type={enc,enc,...} (multi-value: newly_built,resale)
         &energy_label={enc,enc,...} (each label percent-encoded, comma-joined)
-        &exterior_space_type=garden (only when garden is True)
+        &exterior_space_type={enc,enc,...} (multi-value; ``garden=True`` adds
+                                            "garden")
+        &exterior_space_garden_orientation={enc,enc,...} (north,east,south,west)
         &exterior_space_garden_size={min}-  (only when garden_size_min is set)
+        &zoning={enc,enc,...}       (residential,recreational)
+        &parking_facility={enc,enc,...}
+        &garage_type={enc,enc,...}
+        &garage_capacity={min}-{max}
+        &accessibility={enc,enc,...}
+        &amenities={enc,enc,...}
         &construction_period={code,code,...} (mapped Funda codes)
         &sort={value}               (optional free string)
         &page={n}
 
     ``selected_area`` is always a plain area slug (e.g. ``amsterdam``) and is
     never combined with the radius. When ``radius_km`` is set it is emitted as
-    its own ``radius_search`` parameter. ``energy_labels`` are percent-encoded
+    its own ``radius_search`` parameter. Multi-value lists are percent-encoded
     individually (so ``+`` becomes ``%2B``) and joined with a literal comma,
-    preserving the configured order verbatim.
+    preserving the configured order verbatim. ``construction_periods`` is
+    already a list of Funda codes (mapped by the caller) and is comma-joined
+    without additional encoding.
     """
     base = f"https://www.funda.nl/zoeken/{offering_type}"
 
@@ -145,20 +183,33 @@ def build_search_url(
     if availability is not None:
         params.append(f"availability={availability}")
 
+    encoded = _join_encoded(object_type)
+    if encoded is not None:
+        params.append(f"object_type={encoded}")
+
     fp = _range_param("floor_area", floor_area_min, floor_area_max)
     if fp is not None:
         params.append(fp)
+
+    pp = _range_param("plot_area", plot_area_min, plot_area_max)
+    if pp is not None:
+        params.append(pp)
 
     bp = _range_param("bedrooms", bedrooms_min, bedrooms_max)
     if bp is not None:
         params.append(bp)
 
+    bap = _range_param("bathrooms", bathrooms_min, bathrooms_max)
+    if bap is not None:
+        params.append(bap)
+
     rp = _range_param("rooms", rooms_min, rooms_max)
     if rp is not None:
         params.append(rp)
 
-    if construction_type is not None:
-        params.append(f"construction_type={construction_type}")
+    encoded = _join_encoded(construction_type)
+    if encoded is not None:
+        params.append(f"construction_type={encoded}")
 
     if energy_labels is not None:
         encoded = ",".join(
@@ -166,11 +217,47 @@ def build_search_url(
         )
         params.append(f"energy_label={encoded}")
 
-    if garden is True:
-        params.append("exterior_space_type=garden")
+    # exterior_space_type: the new multi-value list merged with the legacy
+    # ``garden`` boolean shorthand (``garden=True`` ≡ including "garden"). The
+    # union is emitted as a single parameter so there are never two ways to
+    # express the same filter.
+    exterior_types = list(exterior_space_type) if exterior_space_type else []
+    if garden is True and "garden" not in exterior_types:
+        exterior_types.append("garden")
+    encoded = _join_encoded(exterior_types)
+    if encoded is not None:
+        params.append(f"exterior_space_type={encoded}")
+
+    encoded = _join_encoded(exterior_space_garden_orientation)
+    if encoded is not None:
+        params.append(f"exterior_space_garden_orientation={encoded}")
 
     if garden_size_min is not None:
         params.append(f"exterior_space_garden_size={garden_size_min}-")
+
+    encoded = _join_encoded(zoning)
+    if encoded is not None:
+        params.append(f"zoning={encoded}")
+
+    encoded = _join_encoded(parking_facility)
+    if encoded is not None:
+        params.append(f"parking_facility={encoded}")
+
+    encoded = _join_encoded(garage_type)
+    if encoded is not None:
+        params.append(f"garage_type={encoded}")
+
+    gcp = _range_param("garage_capacity", garage_capacity_min, garage_capacity_max)
+    if gcp is not None:
+        params.append(gcp)
+
+    encoded = _join_encoded(accessibility)
+    if encoded is not None:
+        params.append(f"accessibility={encoded}")
+
+    encoded = _join_encoded(amenities)
+    if encoded is not None:
+        params.append(f"amenities={encoded}")
 
     if construction_periods is not None:
         params.append(f"construction_period={','.join(construction_periods)}")
@@ -454,13 +541,27 @@ def scrape_funda(
     rooms_min: Optional[int] = None,
     rooms_max: Optional[int] = None,
     radius_km: Optional[int] = None,
-    construction_type: Optional[str] = None,
+    construction_type: Optional[list[str]] = None,
     energy_labels: Optional[list[str]] = None,
     construction_periods: Optional[list[str]] = None,
     garden: Optional[bool] = None,
     garden_size_min: Optional[int] = None,
     availability: Optional[str] = None,
     sort: Optional[str] = None,
+    object_type: Optional[list[str]] = None,
+    plot_area_min: Optional[int] = None,
+    plot_area_max: Optional[int] = None,
+    bathrooms_min: Optional[int] = None,
+    bathrooms_max: Optional[int] = None,
+    garage_capacity_min: Optional[int] = None,
+    garage_capacity_max: Optional[int] = None,
+    exterior_space_type: Optional[list[str]] = None,
+    exterior_space_garden_orientation: Optional[list[str]] = None,
+    zoning: Optional[list[str]] = None,
+    parking_facility: Optional[list[str]] = None,
+    garage_type: Optional[list[str]] = None,
+    accessibility: Optional[list[str]] = None,
+    amenities: Optional[list[str]] = None,
     max_pages: int = 5,
     headless: bool = True,
 ) -> list[dict]:
@@ -492,21 +593,50 @@ def scrape_funda(
         Maximum number of rooms.
     radius_km : int or None
         Search radius in kilometres around the area (None = no radius).
-    construction_type : str or None
-        Exact construction type: "existing" or "new" (None = no restriction).
+    construction_type : list[str] or None
+        Construction types, e.g. ``["newly_built", "resale"]`` (None = no
+        restriction). Multi-value; emitted comma-joined and percent-encoded.
     energy_labels : list[str] or None
         Ordered energy labels passed to Funda verbatim (None = no restriction).
     construction_periods : list[str] or None
         Funda construction-period codes (already mapped from config), joined
         with commas (None = no restriction).
     garden : bool or None
-        When True, adds ``exterior_space_type=garden``.
+        When True, adds "garden" to ``exterior_space_type``.
     garden_size_min : int or None
         Minimum garden size in m²; adds ``exterior_space_garden_size={min}-``.
     availability : str or None
         Free-string ``availability`` value (None = no restriction).
     sort : str or None
         Free-string ``sort`` value (None = no restriction).
+    object_type : list[str] or None
+        Object types (e.g. ``["apartment", "house"]``); multi-value.
+    plot_area_min : int or None
+        Minimum plot size in m²; emits ``plot_area={min}-`` (search-level).
+    plot_area_max : int or None
+        Maximum plot size in m².
+    bathrooms_min : int or None
+        Minimum bathrooms; emits ``bathrooms={min}-{max}``.
+    bathrooms_max : int or None
+        Maximum bathrooms.
+    garage_capacity_min : int or None
+        Minimum garage capacity; emits ``garage_capacity={min}-{max}``.
+    garage_capacity_max : int or None
+        Maximum garage capacity.
+    exterior_space_type : list[str] or None
+        Exterior space types (e.g. ``["balcony", "terrace", "garden"]``).
+    exterior_space_garden_orientation : list[str] or None
+        Garden orientations (north, east, south, west).
+    zoning : list[str] or None
+        Zoning values (residential, recreational).
+    parking_facility : list[str] or None
+        Parking facility types.
+    garage_type : list[str] or None
+        Garage types.
+    accessibility : list[str] or None
+        Accessibility features (lift, single_storey, ...).
+    amenities : list[str] or None
+        Amenities (renewable_energy, fireplace, ...).
     max_pages : int
         Maximum pages to scrape (default 5, ~150 listings).
     headless : bool
@@ -565,6 +695,20 @@ def scrape_funda(
                 garden_size_min=garden_size_min,
                 availability=availability,
                 sort=sort,
+                object_type=object_type,
+                plot_area_min=plot_area_min,
+                plot_area_max=plot_area_max,
+                bathrooms_min=bathrooms_min,
+                bathrooms_max=bathrooms_max,
+                garage_capacity_min=garage_capacity_min,
+                garage_capacity_max=garage_capacity_max,
+                exterior_space_type=exterior_space_type,
+                exterior_space_garden_orientation=exterior_space_garden_orientation,
+                zoning=zoning,
+                parking_facility=parking_facility,
+                garage_type=garage_type,
+                accessibility=accessibility,
+                amenities=amenities,
                 page=1,
             )
             logger.info("Fetching page 1 to detect total listing count: %s", page1_url)
@@ -637,6 +781,20 @@ def scrape_funda(
                     garden_size_min=garden_size_min,
                     availability=availability,
                     sort=sort,
+                    object_type=object_type,
+                    plot_area_min=plot_area_min,
+                    plot_area_max=plot_area_max,
+                    bathrooms_min=bathrooms_min,
+                    bathrooms_max=bathrooms_max,
+                    garage_capacity_min=garage_capacity_min,
+                    garage_capacity_max=garage_capacity_max,
+                    exterior_space_type=exterior_space_type,
+                    exterior_space_garden_orientation=exterior_space_garden_orientation,
+                    zoning=zoning,
+                    parking_facility=parking_facility,
+                    garage_type=garage_type,
+                    accessibility=accessibility,
+                    amenities=amenities,
                     page=page_num,
                 )
 
