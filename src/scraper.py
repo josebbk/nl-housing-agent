@@ -87,7 +87,7 @@ def _join_encoded(values: Optional[list[str]]) -> Optional[str]:
 
 
 def build_search_url(
-    area: str = "amsterdam",
+    area: Optional[str] = None,
     offering_type: str = "koop",
     price_min: Optional[int] = None,
     price_max: Optional[int] = None,
@@ -125,7 +125,8 @@ def build_search_url(
     """Build a Funda search URL with the given filters.
 
     Funda URL format (discovered by loading the site with Playwright):
-        https://www.funda.nl/zoeken/{offering_type}?selected_area={area}
+        https://www.funda.nl/zoeken/{offering_type}
+        ?selected_area={area}      (omitted when area is None)
         &radius_search={radius}      (optional: standalone search radius)
         &price={min}-{max}
         &publication_date={n}       (optional: 1, 3, 5, 10, or 30)
@@ -153,8 +154,10 @@ def build_search_url(
         &page={n}
 
     ``selected_area`` is always a plain area slug (e.g. ``amsterdam``) and is
-    never combined with the radius. When ``radius_km`` is set it is emitted as
-    its own ``radius_search`` parameter. Multi-value lists are percent-encoded
+    never combined with the radius. When ``area`` is ``None`` the
+    ``selected_area`` parameter is omitted entirely, letting Funda apply its
+    own default. When ``radius_km`` is set it is emitted as its own
+    ``radius_search`` parameter. Multi-value lists are percent-encoded
     individually (so ``+`` becomes ``%2B``) and joined with a literal comma,
     preserving the configured order verbatim. ``construction_periods`` is
     already a list of Funda codes (mapped by the caller) and is comma-joined
@@ -162,7 +165,9 @@ def build_search_url(
     """
     base = f"https://www.funda.nl/zoeken/{offering_type}"
 
-    params = [f"selected_area={area}"]
+    params: list[str] = []
+    if area is not None:
+        params.append(f"selected_area={area}")
 
     if radius_km is not None:
         params.append(f"radius_search={radius_km}")
@@ -529,7 +534,7 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def scrape_funda(
-    area: str = "amsterdam",
+    area: Optional[str] = None,
     offering_type: str = "koop",
     price_min: Optional[int] = None,
     price_max: Optional[int] = None,
@@ -569,8 +574,10 @@ def scrape_funda(
 
     Parameters
     ----------
-    area : str
-        City/area slug (e.g. "amsterdam").
+    area : str or None
+        City/area slug (e.g. "amsterdam"). None (default) omits the
+        ``selected_area`` parameter entirely, letting Funda apply its own
+        default.
     offering_type : str
         "koop" (for sale) or "huur" (for rent).
     price_min, price_max : int or None

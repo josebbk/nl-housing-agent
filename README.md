@@ -25,7 +25,7 @@ For deeper detail beyond this overview, see:
 | `src/detail_scraper.py` | Fetches and parses a single listing's detail page | Same Akamai-bypass technique; extracts ~20 nullable fields (ownership, garden, garage, insulation, etc.) via section/keyword parsing, never guesses a missing value |
 | `src/scoring.py` | Scores a listing against owner preferences | 12 weighted criteria, renormalized when data is missing; returns score (0–100), breakdown, and a confidence flag |
 | `src/storage.py` | SQLite persistence, dedup, retention | `listings` table, `listings_archive`, `scraper_metadata` (filter snapshot + last successful run) |
-| `src/config.py` | Loads and validates filter/retention config | `FilterConfig`, `RetentionConfig` — single source of truth for defaults |
+| `src/config.py` | Loads and validates filter/retention config | `FilterConfig` (all fields nullable, no code-level filter defaults), `RetentionConfig` |
 | `src/notifier.py` | Formats and sends Telegram messages | Score breakdown, best/weakest criteria, failure-alert channel |
 | `src/main.py` | Orchestrates a full run | Ties scraping → storage → filtering → detail/scoring → notification → archival together; also implements `--dry-run`, `--backfill`, `--seed` |
 | `config/filters.json` | Human-editable search/filter criteria | Loaded by `FilterConfig.from_file()` |
@@ -92,7 +92,7 @@ Each run first decides whether it's a **full scan** or a **delta scan**, which a
 
 ## 5. Filtering
 
-Phase 1 hard filters (price, bedrooms, living area, plus several optional preferences) are defined in **`config/filters.json`** and loaded via `FilterConfig.from_file()` in `src/config.py`. Defaults (used for any key that's absent) are €550,000–€750,000, ≥3 bedrooms, ≥100 m².
+Search filters (price, bedrooms, living area, plus several optional preferences) are defined in **`config/filters.json`** and loaded via `FilterConfig.from_file()` in `src/config.py`. Every key is optional and has no code-level fallback; the shipped starting values in the committed file are €550,000–€750,000, ≥3 bedrooms, ≥100 m² (removing a key, or setting it to `null`, disables that filter entirely).
 
 Filters split into two groups:
 - **Search-level filters** — passed straight to the Funda search URL (`price_min/max`, `living_area_min/max`, `bedrooms_min/max`, `rooms_min/max`, `radius_km`, `construction_type`, `transaction_type`).

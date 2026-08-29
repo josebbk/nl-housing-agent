@@ -9,7 +9,7 @@ before, stores them in SQLite, applies the confirmed Phase 1 property filters
 Telegram notifications for newly detected matching listings. As of Phase 2 the
 filter values are configurable by editing `config/filters.json` (see
 "Phase 2 — Configurable Search Filters"), with the Phase 1 values above
-as the defaults.
+shipped as the starting values in that file.
 
 The product-level requirements are defined in `product.md`.
 
@@ -888,14 +888,13 @@ Step 8: save_last_successful_run(...)
 
 ## Phase 2 — Configurable Search Filters
 
-Phase 2 makes the search filter criteria configurable at runtime while
-preserving the Phase 1 behavior as the default. The owner edits a single
-human-readable JSON file — `config/filters.json` — instead of `.env`. The
-frozen contract is implemented across four files: `config/filters.json`
-(user-editable values), `src/config.py` (single source of truth for filter
-defaults and loading), `src/storage.py` (applies the filters in the matching
-query), and `src/main.py` (loads and threads the configuration through the
-run).
+Phase 2 makes the search filter criteria configurable at runtime. The owner
+edits a single human-readable JSON file — `config/filters.json` — instead of
+`.env`. The frozen contract is implemented across four files:
+`config/filters.json` (user-editable values), `src/config.py` (single source
+of truth for the filter shape and loading), `src/storage.py` (applies the
+filters in the matching query), and `src/main.py` (loads and threads the
+configuration through the run).
 
 ```text
 config/filters.json
@@ -912,94 +911,90 @@ src/scraper.py / src/storage.py
 
 ### `config/filters.json` — user-editable filter file
 
-The file is organised into two sections for readability: `required` holds
-the four Phase 1 base criteria, `optional` lists every optional preference
-key where `null` means "no restriction". The default file is committed with
-the Phase 1 values:
+The file is a single flat JSON object — one key per filter — where `null`
+(or `[]` for multi-value filters) means "no restriction". Every key is
+optional: an absent key becomes `None` on `FilterConfig` with no code-level
+fallback. The committed file ships the Phase 1 values as starting values:
 
 ```json
 {
-    "note": "Human-editable housing search filters. See the table below and the per-key docs for types, defaults, and valid values.",
-    "required": {
-        "price_min": 550000,
-        "price_max": 750000,
-        "bedrooms_min": 3,
-        "living_area_min": 100
-    },
-    "optional": {
-        "note": "null/[] = no restriction. Multi-value filters are ordered JSON arrays; ranged filters use _min/_max pairs (null = open bound).",
-        "bedrooms_max": null,
-        "living_area_max": null,
-        "rooms_min": null,
-        "rooms_max": null,
-        "plot_size_min": null,
-        "plot_size_max": null,
-        "property_type": null,
-        "energy_labels": ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"],
-        "transaction_type": null,
-        "radius_km": 10,
-        "selected_area": "amsterdam",
-        "construction_type": null,
-        "construction_periods": ["1971-1980", "1981-1990", "1991-2000", "2001-2010", "2011-2020", "after_2020"],
-        "object_type": null,
-        "bathrooms_min": null,
-        "bathrooms_max": null,
-        "garage_capacity_min": null,
-        "garage_capacity_max": null,
-        "exterior_space_type": null,
-        "exterior_space_garden_orientation": null,
-        "garden": true,
-        "garden_size_min": 70,
-        "zoning": null,
-        "parking_facility": null,
-        "garage_type": null,
-        "accessibility": null,
-        "amenities": null,
-        "availability": "available",
-        "sort": "publish_date_utc_desc"
-    }
+    "note": "Human-editable housing search filters. See the table below and the per-key docs for types and valid values.",
+    "price_min": 550000,
+    "price_max": 750000,
+    "bedrooms_min": 3,
+    "living_area_min": 100,
+    "bedrooms_max": null,
+    "living_area_max": null,
+    "rooms_min": null,
+    "rooms_max": null,
+    "plot_size_min": null,
+    "plot_size_max": null,
+    "property_type": null,
+    "energy_labels": ["A++++", "A+++", "A++", "A+", "A", "B", "C", "D", "A+++++"],
+    "transaction_type": null,
+    "radius_km": 10,
+    "selected_area": "amsterdam",
+    "construction_type": null,
+    "construction_periods": ["1971-1980", "1981-1990", "1991-2000", "2001-2010", "2011-2020", "after_2020"],
+    "object_type": null,
+    "bathrooms_min": null,
+    "bathrooms_max": null,
+    "garage_capacity_min": null,
+    "garage_capacity_max": null,
+    "exterior_space_type": null,
+    "exterior_space_garden_orientation": null,
+    "garden": true,
+    "garden_size_min": 70,
+    "zoning": null,
+    "parking_facility": null,
+    "garage_type": null,
+    "accessibility": null,
+    "amenities": null,
+    "availability": "available",
+    "sort": "publish_date_utc_desc"
 }
 ```
 
-| Key                                  | Type       | Default    | Meaning                                        |
-| ------------------------------------ | ---------- | ---------- | ---------------------------------------------- |
-| `price_min`                          | int        | 550000     | Minimum asking price (€)                       |
-| `price_max`                          | int        | 750000     | Maximum asking price (€)                       |
-| `bedrooms_min`                       | int        | 3          | Minimum bedrooms                               |
-| `bedrooms_max`                       | int / null | none       | Maximum bedrooms                               |
-| `living_area_min`                    | int        | 100        | Minimum living area (m²)                       |
-| `living_area_max`                    | int / null | none       | Maximum living area (m²)                       |
-| `rooms_min`                          | int / null | none       | Minimum total rooms                            |
-| `rooms_max`                          | int / null | none       | Maximum total rooms                            |
-| `plot_size_min`                      | int / null | none       | Minimum plot size (m²); also emitted as `plot_area` on the search URL |
-| `plot_size_max`                      | int / null | none       | Maximum plot size (m²)                         |
-| `property_type`                      | str / null | none       | Required property type, e.g. `appartement`     |
-| `energy_labels`                      | list / null | none      | Ordered energy labels sent to Funda verbatim   |
-| `transaction_type`                   | str / null | none       | `koop` (for sale) or `huur` (rent)             |
-| `radius_km`                          | int / null | none       | Search radius (km); emitted as `radius_search` |
-| `selected_area`                      | str / null | `amsterdam` | Area slug (e.g. `amsterdam`, `nl`); emitted as `selected_area` |
-| `construction_type`                  | list / null | none      | Construction types: `newly_built`/`resale` (legacy `new`/`existing` mapped) |
-| `construction_periods`               | list / null | none      | Human-readable build-year periods (mapped)     |
-| `object_type`                        | list / null | none       | Object types: `apartment`, `house`             |
-| `bathrooms_min`                      | int / null | none       | Minimum bathrooms                              |
-| `bathrooms_max`                      | int / null | none       | Maximum bathrooms                              |
-| `garage_capacity_min`                | int / null | none       | Minimum garage capacity                        |
-| `garage_capacity_max`                | int / null | none       | Maximum garage capacity                        |
-| `exterior_space_type`                | list / null | none       | Exterior spaces: `balcony`, `terrace`, `garden` |
-| `exterior_space_garden_orientation`  | list / null | none       | Garden orientations: `north`, `east`, `south`, `west` |
-| `garden`                             | bool / null | none       | Legacy shorthand: `true` adds `garden` to `exterior_space_type` |
-| `garden_size_min`                    | int / null | none       | Minimum garden size (m²); requires a garden selected |
-| `zoning`                             | list / null | none       | Zoning: `residential`, `recreational`          |
-| `parking_facility`                   | list / null | none       | Parking facility types (see vocabulary below)  |
-| `garage_type`                        | list / null | none       | Garage types (see vocabulary below)            |
-| `accessibility`                      | list / null | none       | Accessibility features (see vocabulary below)  |
-| `amenities`                          | list / null | none       | Amenities (see vocabulary below)               |
-| `availability`                       | str / null | none       | Free-string `availability` value               |
-| `sort`                               | str / null | none       | Free-string `sort` value                       |
+| Key                                  | Type       | Starting value | Meaning                                    |
+| ------------------------------------ | ---------- | -------------- | ------------------------------------------ |
+| `price_min`                          | int / null | 550000         | Minimum asking price (€)                   |
+| `price_max`                          | int / null | 750000         | Maximum asking price (€)                   |
+| `bedrooms_min`                       | int / null | 3              | Minimum bedrooms                           |
+| `bedrooms_max`                       | int / null | none           | Maximum bedrooms                           |
+| `living_area_min`                    | int / null | 100            | Minimum living area (m²)                   |
+| `living_area_max`                    | int / null | none           | Maximum living area (m²)                   |
+| `rooms_min`                          | int / null | none           | Minimum total rooms                        |
+| `rooms_max`                          | int / null | none           | Maximum total rooms                        |
+| `plot_size_min`                      | int / null | none           | Minimum plot size (m²); also emitted as `plot_area` on the search URL |
+| `plot_size_max`                      | int / null | none           | Maximum plot size (m²)                     |
+| `property_type`                      | str / null | none           | Required property type, e.g. `appartement` |
+| `energy_labels`                      | list / null | none           | Ordered energy labels sent to Funda verbatim |
+| `transaction_type`                   | str / null | none           | `koop` (for sale) or `huur` (rent)         |
+| `radius_km`                          | int / null | none           | Search radius (km); emitted as `radius_search` |
+| `selected_area`                      | str / null | `amsterdam`    | Area slug (e.g. `amsterdam`, `nl`); emitted as `selected_area` |
+| `construction_type`                  | list / null | none           | Construction types: `newly_built`/`resale` (legacy `new`/`existing` mapped) |
+| `construction_periods`               | list / null | none           | Human-readable build-year periods (mapped) |
+| `object_type`                        | list / null | none           | Object types: `apartment`, `house`         |
+| `bathrooms_min`                      | int / null | none           | Minimum bathrooms                          |
+| `bathrooms_max`                      | int / null | none           | Maximum bathrooms                          |
+| `garage_capacity_min`                | int / null | none           | Minimum garage capacity                    |
+| `garage_capacity_max`                | int / null | none           | Maximum garage capacity                    |
+| `exterior_space_type`                | list / null | none           | Exterior spaces: `balcony`, `terrace`, `garden` |
+| `exterior_space_garden_orientation`  | list / null | none           | Garden orientations: `north`, `east`, `south`, `west` |
+| `garden`                             | bool / null | none           | Legacy shorthand: `true` adds `garden` to `exterior_space_type` |
+| `garden_size_min`                    | int / null | none           | Minimum garden size (m²); requires a garden selected |
+| `zoning`                             | list / null | none           | Zoning: `residential`, `recreational`      |
+| `parking_facility`                   | list / null | none           | Parking facility types (see vocabulary below) |
+| `garage_type`                        | list / null | none           | Garage types (see vocabulary below)        |
+| `accessibility`                      | list / null | none           | Accessibility features (see vocabulary below) |
+| `amenities`                          | list / null | none           | Amenities (see vocabulary below)           |
+| `availability`                       | str / null | none           | Free-string `availability` value           |
+| `sort`                               | str / null | none           | Free-string `sort` value                   |
 
-The `selected_area` key defaults to `amsterdam` (preserving the Phase 1
-behavior) rather than `null`, unlike the other optional keys. Its value is a
-plain area slug; it is never combined with `radius_km`.
+The `selected_area` key ships as `amsterdam` (preserving the Phase 1
+behavior) rather than `null`, but like every other key it has no code-level
+default: removing it yields `selected_area=None`. Its value is a plain area
+slug; it is never combined with `radius_km`.
 
 The `construction_type` field was **converted from a single value to a
 multi-value list**. Funda's current tokens are `newly_built` and `resale`;
@@ -1020,14 +1015,10 @@ search endpoint is actually order-sensitive, or whether this was an
 artifact of how the URL was originally captured. Do not silently reorder
 it.
 
-The `null` optional values mean "no preference filter". Missing keys fall
-back to the defaults shown above. Each key must appear in its own section
-(`required` for the four base criteria, `optional` for everything else);
-a misplaced key, an unknown key inside a section, a non-object section, or
-mixing sectioned and flat top-level keys is rejected with a clear error.
-The legacy flat layout (all filter keys at the top level, no sections) is
-still accepted by `FilterConfig.from_file()` for backward compatibility.
-Unknown keys are rejected so a typo cannot silently change behavior.
+The `null` filter values mean "no preference filter". Missing keys become
+`None` (no restriction) — there is no code-level fallback default; the values
+shown above are only what the committed file currently contains. Unknown keys
+are rejected with a clear error so a typo cannot silently change behavior.
 
 **Ranged vs single-value filters.** Most numeric filters are **ranged**
 (`*_min` / `*_max` pairs). On the search URL a bound set to `null` is
@@ -1049,9 +1040,10 @@ Several filters are **single-value** (no range makes sense):
 * `construction_type` — a multi-value list of construction types using
   Funda's current tokens `newly_built` / `resale` (the legacy `new` /
   `existing` are accepted and mapped). Set to `null` for no restriction.
-* `selected_area` — a plain area slug (default `amsterdam`), emitted as
-  `selected_area=…`. Distinct from `radius_km` (which is its own
-  `radius_search` parameter).
+* `selected_area` — a plain area slug (shipped as `amsterdam`), emitted as
+  `selected_area=…` only when set; when `None` the parameter is omitted
+  entirely so Funda applies its own default. Distinct from `radius_km` (which
+  is its own `radius_search` parameter).
 * `energy_labels` — an ordered list of energy labels, sent to Funda
   verbatim as `energy_label=…` (each label percent-encoded, comma-joined).
   Search-level only.
@@ -1086,10 +1078,10 @@ Several filters are **single-value** (no range makes sense):
 ```python
 @dataclass(frozen=True)
 class FilterConfig:
-    price_min: int
-    price_max: int
-    bedrooms_min: int
-    living_area_min: int
+    price_min: int | None = None
+    price_max: int | None = None
+    bedrooms_min: int | None = None
+    living_area_min: int | None = None
     bedrooms_max: int | None = None
     living_area_max: int | None = None
     rooms_min: int | None = None
@@ -1194,27 +1186,26 @@ existing default behavior (`garden: true` + `garden_size_min: 70`) exactly.
 
 * `FilterConfig` is immutable (`frozen=True`); validation runs at
   construction in `__post_init__`.
-* `DEFAULT_FILTERS` is a module-level `FilterConfig` holding the Phase 1
-  defaults (`price_min=550000`, `price_max=750000`, `bedrooms_min=3`,
-  `living_area_min=100`, all optional preferences `None`). It is the single
-  source of truth for filter defaults.
+* `DEFAULT_FILTERS` is a module-level `FilterConfig` with every field `None`
+  (representing "no restriction at all"). With no code-level fallback
+  defaults, the Phase 1 criteria live only as values written in
+  `config/filters.json`.
 * `FilterConfig.from_file()` loads `config/filters.json` from a
   project-root-relative path, so execution from cron, systemd, or tmux does
-  not depend on the process working directory. Missing required keys fall
-  back to the Phase 1 defaults; missing optional keys become `None`; unknown
-  keys and invalid values raise a clear `ValueError` rather than being
-  silently coerced.
+  not depend on the process working directory. The file is a single flat
+  JSON object; every key is optional and an absent key becomes `None` (no
+  restriction) with no fallback. Unknown keys and invalid values raise a
+  clear `ValueError` rather than being silently coerced.
 
 Validation rules:
 
-* integer fields must be integers (floats and booleans rejected); invalid
-  values raise `ValueError`
-* `price_min <= price_max`
+* integer fields must be integers when set (floats and booleans rejected);
+  invalid values raise `ValueError`; `None` fields are not validated
+* for each ranged pair (`price`, `bedrooms`, `living_area`, `rooms`,
+  `plot_size`, `bathrooms`, `garage_capacity`), when both bounds are set the
+  minimum must be `<=` the maximum
 * numeric minimums (`price_min`, `bedrooms_min`, `living_area_min`,
-  `plot_size_min`) must be non-negative
-* for each ranged pair (`bedrooms`, `living_area`, `rooms`, `plot_size`,
-  `bathrooms`, `garage_capacity`), when both bounds are set the minimum must
-  be `<=` the maximum
+  `plot_size_min`) must be non-negative when set
 * `radius_km`, when set, must be a positive integer (rejects `0`, negatives,
   non-integers, and booleans)
 * `transaction_type`, when set, must be `koop` or `huur` (lowercase)
@@ -1259,10 +1250,11 @@ fetch_unnotified_matching_listings(
 ```
 
 * The signature is backward compatible — existing callers that pass only
-  `db_path` keep the Phase 1 behavior via `DEFAULT_FILTERS`.
-* The base conditions are always applied: `notified = 0`, price within
-  `[price_min, price_max]`, `bedrooms >= bedrooms_min`, and
-  `living_area_m2 >= living_area_min`.
+  `db_path` get no restriction (an all-`None` `DEFAULT_FILTERS`).
+* The base condition `notified = 0` is always applied. Each of the four core
+  bounds — `price >= ?`/`<= ?`, `bedrooms >= ?`, `living_area_m2 >= ?` — is
+  only applied when its filter value is not `None`, so an all-`None`
+  `FilterConfig` matches every unnotified listing.
 * Optional preferences are applied only when not `None`:
   * `bedrooms_max` → `bedrooms <= ?`
   * `living_area_max` → `living_area_m2 <= ?`
@@ -1347,19 +1339,21 @@ scan-parameter mapping are pinned by `tests/test_orchestration.py`.
 
 ## Phase 1 Filtering Criteria
 
-The confirmed Phase 1 filtering criteria serve as the default source of truth for filter defaults across all project documentation:
+The confirmed Phase 1 filtering criteria are the project's reference
+criteria (the values shipped in `config/filters.json`):
 
 * **Price:** €550,000–€750,000 (Confirmed)
 * **Bedrooms:** ≥3
 * **Living area:** ≥100 m²
 
-These values are also the Phase 2 defaults (`DEFAULT_FILTERS` in
-`src/config.py` and the committed `config/filters.json`) and remain in effect
-whenever a filter key is absent from the filter file.
+These values are shipped as the starting values written in the committed
+`config/filters.json`. They are not code-level defaults: `DEFAULT_FILTERS` in
+`src/config.py` has every field `None`, and an absent key in the filter file
+yields `None` (no restriction), not a fallback to these values.
 
 ### Resolution of Legacy Requirements
 
-The price range has been explicitly confirmed as **€550,000–€750,000** by the project owner. This range remains the default scraper behavior, configurable by editing `price_min` / `price_max` in `config/filters.json`.
+The price range has been explicitly confirmed as **€550,000–€750,000** by the project owner. This range is shipped as the starting value in `config/filters.json`, configurable by editing `price_min` / `price_max` there.
 
 ---
 
@@ -1794,10 +1788,10 @@ remain an `operations.md` decision.
 
 Filter thresholds are now configurable by editing `config/filters.json`,
 loaded via `src/config.py` (`FilterConfig`, `DEFAULT_FILTERS`,
-`FilterConfig.from_file()`), with the Phase 1 values preserved as defaults
-(see "Phase 2 — Configurable Search Filters" above). No configuration
-framework or new dependency was introduced; `.env` remains reserved for
-secrets.
+`FilterConfig.from_file()`), with the Phase 1 values shipped as the starting
+values in that file (no code-level fallback; see "Phase 2 — Configurable
+Search Filters" above). No configuration framework or new dependency was
+introduced; `.env` remains reserved for secrets.
 
 *Note:* Ranking/scoring configuration is resolved via
 `config/preferences.json` (see "Phase 2 — Detail-Page Scraping & Scoring"

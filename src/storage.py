@@ -80,7 +80,8 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 # here is the project's schema-migration mechanism: idempotent
                 # ALTER TABLE ADD COLUMN, safe on legacy databases, never
                 # destructive. listings_archive must always mirror the
-                # listings column set because archival uses SELECT *.
+                # listings column set AND order because archival copies rows
+                # via ``INSERT OR REPLACE ... SELECT *``.
                 phase2_columns = [
                     ("ownership_type", "TEXT"),
                     ("erfpacht_canon_annual", "REAL"),
@@ -107,25 +108,12 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                     ("detail_fetched_at", "TEXT"),
                     ("last_seen_at", "TEXT"),
                 ]
-                for col_name, col_type in phase2_columns:
-                    cursor.execute(
-                        f"PRAGMA table_info(listings);"
-                    )
-                    existing_cols = {row[1] for row in cursor.fetchall()}
-                    if col_name not in existing_cols:
-                        try:
-                            cursor.execute(
-                                f"ALTER TABLE listings ADD COLUMN {col_name} {col_type};"
-                            )
-                            logger.debug("Added column %s to listings table.", col_name)
-                        except sqlite3.Error as e:
-                            logger.debug(
-                                "Could not add column %s (may already exist): %s",
-                                col_name, e,
-                            )
-        # Create the listings_archive table (same schema as listings)
-                # for future stale-listing archival. Currently unused —
-                # population logic is a future task.
+                # Create the listings_archive table (same schema as listings)
+                # for stale-listing archival (populated by
+                # archive_stale_listings()). ``CREATE TABLE IF NOT EXISTS`` is
+                # a no-op when the table already exists, so the migration loop
+                # below — not this statement — is what keeps an existing
+                # archive in lock-step with listings.
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS listings_archive (
                         listing_id TEXT PRIMARY KEY,
@@ -157,9 +145,9 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                         insulation_score REAL,
                         heating_type TEXT,
                         boiler_year INTEGER,
-                    bathrooms INTEGER,
-                    stories INTEGER,
-                    has_attic INTEGER,
+                        bathrooms INTEGER,
+                        stories INTEGER,
+                        has_attic INTEGER,
                         neighborhood_avg_price_m2 REAL,
                         image_urls TEXT,
                         score INTEGER,
@@ -169,6 +157,53 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                         last_seen_at TEXT
                     );
                 """)
+
+                # Apply the same idempotent column migration to both tables so
+                # an existing ``listings_archive`` created before a later
+                # schema change (e.g. stories/has_attic/image_urls) is widened
+                # to match ``listings`` — never dropped/recreated.
+                for table in ("listings", "listings_archive"):
+                    existing_cols = {
+                        row[1] for row in cursor.execute(
+                            f"PRAGMA table_info({table});"
+                        ).fetchall()
+                    }
+                    for col_name, col_type in phase2_columns:
+                        if col_name not in existing_cols:
+                            try:
+                                cursor.execute(
+                                    f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type};"
+                                )
+                                logger.debug(
+                                    "Added column %s to %s table.", col_name, table,
+                                )
+                            except sqlite3.Error as e:
+                                logger.debug(
+                                    "Could not add column %s to %s "
+                                    "(may already exist): %s",
+                                    col_name, table, e,
+                                )
+
+                # Runtime consistency check: the two tables must expose the
+                # same columns in the same order, because archival copies rows
+                # via ``INSERT OR REPLACE INTO listings_archive SELECT * FROM
+                # listings``, which is order-sensitive.
+                listings_cols = [
+                    row[1] for row in cursor.execute(
+                        "PRAGMA table_info(listings);"
+                    ).fetchall()
+                ]
+                archive_cols = [
+                    row[1] for row in cursor.execute(
+                        "PRAGMA table_info(listings_archive);"
+                    ).fetchall()
+                ]
+                if listings_cols != archive_cols:
+                    raise sqlite3.OperationalError(
+                        "listings and listings_archive columns out of sync: "
+                        f"listings={listings_cols}, "
+                        f"listings_archive={archive_cols}."
+                    )
 
         logger.info("Database initialized successfully at: %s", db_path)
     except sqlite3.Error as e:
@@ -581,13 +616,11 @@ def fetch_unnotified_matching_listings(
     Fetches all listings that have NOT yet been notified (notified = 0)
     and match the given filter criteria.
 
-    Defaults to the frozen Phase 1 criteria (via DEFAULT_FILTERS):
-    - Price: €550,000 to €750,000 (inclusive)
-    - Bedrooms: >= 3
-    - Living area: >= 100 m2
-
-    Optional preferences (property_type, plot_size_min/max,
-    bedrooms_max, living_area_max) are only applied when they are not None.
+    Every filter is optional and imposes no restriction when it is ``None``.
+    Each price/bedrooms/living-area bound is only applied when its value is
+    not ``None`` (an all-``None`` ``FilterConfig`` matches every unnotified
+    listing). Optional preferences (property_type, plot_size_min/max,
+    bedrooms_max, living_area_max) are applied only when not ``None``.
     NULL optional listing fields never satisfy an enabled preference filter.
 
     Returns a list of dictionaries representing the matching listings.
@@ -597,17 +630,21 @@ def fetch_unnotified_matching_listings(
     conditions = ["notified = 0"]
     params: list = []
 
-    conditions.append("price >= ?")
-    params.append(filters.price_min)
-    conditions.append("price <= ?")
-    params.append(filters.price_max)
-    conditions.append("bedrooms >= ?")
-    params.append(filters.bedrooms_min)
+    if filters.price_min is not None:
+        conditions.append("price >= ?")
+        params.append(filters.price_min)
+    if filters.price_max is not None:
+        conditions.append("price <= ?")
+        params.append(filters.price_max)
+    if filters.bedrooms_min is not None:
+        conditions.append("bedrooms >= ?")
+        params.append(filters.bedrooms_min)
     if filters.bedrooms_max is not None:
         conditions.append("bedrooms <= ?")
         params.append(filters.bedrooms_max)
-    conditions.append("living_area_m2 >= ?")
-    params.append(filters.living_area_min)
+    if filters.living_area_min is not None:
+        conditions.append("living_area_m2 >= ?")
+        params.append(filters.living_area_min)
     if filters.living_area_max is not None:
         conditions.append("living_area_m2 <= ?")
         params.append(filters.living_area_max)
@@ -1699,10 +1736,12 @@ if __name__ == "__main__":
         cur = fresh_conn.cursor()
 
         cur.execute("PRAGMA table_info(listings);")
-        listings_cols = {row[1] for row in cur.fetchall()}
+        listings_cols_ordered = [row[1] for row in cur.fetchall()]
+        listings_cols = set(listings_cols_ordered)
 
         cur.execute("PRAGMA table_info(listings_archive);")
-        archive_cols = {row[1] for row in cur.fetchall()}
+        archive_cols_ordered = [row[1] for row in cur.fetchall()]
+        archive_cols = set(archive_cols_ordered)
         fresh_conn.close()
 
         if "listings_archive" in {
@@ -1740,6 +1779,32 @@ if __name__ == "__main__":
                 msg_parts.append("archive has extra: {}".format(extra))
             print("FAIL: Column mismatch between listings and "
                   "listings_archive: {}".format(", ".join(msg_parts)))
+            exit(1)
+
+        # INSERT OR REPLACE ... SELECT * is order-sensitive, so the two
+        # tables must also agree on column ORDER, not just the set of names.
+        if listings_cols_ordered == archive_cols_ordered:
+            print(
+                "PASS: listings_archive column order matches listings "
+                "({} columns).".format(len(listings_cols_ordered))
+            )
+        else:
+            first_diff = next(
+                (
+                    i for i in range(min(len(listings_cols_ordered),
+                                         len(archive_cols_ordered)))
+                    if listings_cols_ordered[i] != archive_cols_ordered[i]
+                ),
+                min(len(listings_cols_ordered), len(archive_cols_ordered)),
+            )
+            print(
+                "FAIL: Column ORDER differs at index {}: "
+                "listings={} archive={}".format(
+                    first_diff,
+                    listings_cols_ordered[first_diff:first_diff + 5],
+                    archive_cols_ordered[first_diff:first_diff + 5],
+                )
+            )
             exit(1)
 
         # ------------------------------------------------------------------

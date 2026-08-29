@@ -133,23 +133,26 @@ The confirmed Phase 1 filtering criteria are:
 * **Bedrooms:** at least 3
 * **Living area:** at least 100 m²
 
-These values are also the **Phase 2 defaults**. As of Phase 2 the filter
-values are configurable by editing the committed human-readable file
-`config/filters.json` (see `src/config.py`), but the values above remain the
-default behavior whenever a key is absent from the file. `.env` is reserved
-for secrets and is not used for filter configuration.
+These values ship as the starting values written in the committed,
+human-readable file `config/filters.json` (see `src/config.py`). There is no
+code-level fallback: every filter key is equally optional, and a key that is
+absent from the file (or set to `null`) becomes `None` on `FilterConfig`,
+meaning "no restriction". The €550,000–€750,000 / ≥3 bedrooms / ≥100 m²
+criteria are therefore only *the values currently written in the file*, not
+defaults injected by the loader. `.env` is reserved for secrets and is not
+used for filter configuration.
 
-### Optional Phase 2 preference filters
+### Phase 2 preference filters
 
-The base filters above can be narrowed with optional preferences configured in
-`config/filters.json`. In the file itself the four base criteria live under
-the `required` key and every optional preference under the `optional` key
-(where `null` means "no restriction"). The preferences fall into two groups:
+The base filters above can be narrowed with preferences configured in
+`config/filters.json`, which is a single flat JSON object (one key per
+filter). Every key is optional: `null` means "no restriction". The
+preferences fall into two groups:
 
 **Ranged filters (each has a `_min` and `_max` key):**
 
-* **bedrooms** — `bedrooms_min` (≥3 default) and `bedrooms_max`.
-* **living_area** — `living_area_min` (≥100 m² default) and
+* **bedrooms** — `bedrooms_min` (≥3 as shipped in the file) and `bedrooms_max`.
+* **living_area** — `living_area_min` (≥100 m² as shipped in the file) and
   `living_area_max`.
 * **rooms** — `rooms_min` and `rooms_max` (total rooms, search-level only).
 * **plot_size** — `plot_size_min` and `plot_size_max` (m²); also emitted as
@@ -169,8 +172,9 @@ the `required` key and every optional preference under the `optional` key
 * **radius_km** — a search radius in kilometres around Amsterdam, sent as a
   separate `radius_search` parameter (the old embedded `selected_area`
   JSON-array encoding is superseded).
-* **selected_area** — the area slug to search (default `amsterdam`, e.g.
-  `"nl"` for nationwide), emitted as `selected_area`.
+* **selected_area** — the area slug to search (e.g. `amsterdam`, or `"nl"`
+  for nationwide; no code-level default — `None` when unset), emitted as
+  `selected_area`.
 
 **List-valued and other search-level filters:**
 
@@ -214,7 +218,7 @@ filter.
 
 ### Resolution of Price Range Requirement
 
-The price range has been explicitly confirmed by the project owner as **€550,000–€750,000** for Phase 1. This range serves as the active single source of truth across all project documentation. As of Phase 2 the values are configurable by editing `price_min` / `price_max` in `config/filters.json`, with €550,000–€750,000 remaining the default.
+The price range has been explicitly confirmed by the project owner as **€550,000–€750,000** for Phase 1. This range serves as the active single source of truth across all project documentation. As of Phase 2 the values are configurable by editing `price_min` / `price_max` in `config/filters.json`, with €550,000–€750,000 shipped as the starting values in that file.
 
 ---
 
@@ -592,7 +596,7 @@ Completed:
   `DEFAULT_FILTERS` in `src/config.py`, loaded from the human-editable
   `config/filters.json` file via `FilterConfig.from_file()`, applied to the
   Funda search and the storage matching query. The Phase 1 filter values
-  remain the defaults.
+  are shipped as the starting values in `config/filters.json`.
 * Stale-listing archival: listings not seen in a scrape for
   `config/retention.json`'s `stale_days` (default 60) are moved to a
   `listings_archive` table rather than deleted, preserving them for
@@ -658,7 +662,7 @@ The following product decisions have been confirmed and serve as project ground 
 ### Price range
 * **Status:** Confirmed.
 * **Value:** €550,000–€750,000.
-* **Notes:** Serves as the default single source of truth for Phase 1 filtering logic. Configurable in Phase 2 by editing `price_min` / `price_max` in `config/filters.json`; €550,000–€750,000 remains the default.
+* **Notes:** Serves as the default single source of truth for Phase 1 filtering logic. Configurable in Phase 2 by editing `price_min` / `price_max` in `config/filters.json`; €550,000–€750,000 is shipped as the starting value in that file (no code-level fallback).
 
 ---
 

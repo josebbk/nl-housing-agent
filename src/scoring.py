@@ -306,6 +306,9 @@ def _score_living_area(
         return None
 
     floor = filter_config.living_area_min
+    if floor is None:
+        return None
+
     cap = preferences.get("living_area_thresholds", {}).get("cap")
     if cap is None:
         cap = floor + 100
@@ -332,6 +335,9 @@ def _score_rooms(
         return None
 
     floor = filter_config.bedrooms_min
+    if floor is None:
+        floor = 1
+
     cap = preferences.get("rooms_thresholds", {}).get("cap")
     if cap is None:
         cap = max(8, floor + 4)

@@ -467,7 +467,7 @@ def main() -> None:
     )
     try:
         listings = scrape_funda(
-            area=filters.selected_area or "amsterdam",
+            area=filters.selected_area,
             offering_type=offering_type,
             price_min=filters.price_min,
             price_max=filters.price_max,
@@ -678,14 +678,20 @@ def _run_backfill(db_path: str, filters: FilterConfig, dry_run: bool, run_start:
         db.row_factory = sqlite3.Row
         cursor = db.cursor()
 
-        conditions = ["price >= ?"]
-        params = [filters.price_min]
-        conditions.append("price <= ?")
-        params.append(filters.price_max)
-        conditions.append("bedrooms >= ?")
-        params.append(filters.bedrooms_min)
-        conditions.append("living_area_m2 >= ?")
-        params.append(filters.living_area_min)
+        conditions: list[str] = []
+        params: list = []
+        if filters.price_min is not None:
+            conditions.append("price >= ?")
+            params.append(filters.price_min)
+        if filters.price_max is not None:
+            conditions.append("price <= ?")
+            params.append(filters.price_max)
+        if filters.bedrooms_min is not None:
+            conditions.append("bedrooms >= ?")
+            params.append(filters.bedrooms_min)
+        if filters.living_area_min is not None:
+            conditions.append("living_area_m2 >= ?")
+            params.append(filters.living_area_min)
 
         if filters.property_type is not None:
             conditions.append("property_type = ?")
@@ -696,7 +702,7 @@ def _run_backfill(db_path: str, filters: FilterConfig, dry_run: bool, run_start:
             params.append(filters.plot_size_min)
 
         query = "SELECT * FROM listings WHERE {} AND score IS NULL;".format(
-            " AND ".join(conditions)
+            " AND ".join(conditions) if conditions else "1 = 1"
         )
         cursor.execute(query, tuple(params))
         rows = cursor.fetchall()
@@ -838,7 +844,7 @@ def _run_seed(db_path: str, filters: FilterConfig, run_start: datetime) -> None:
     )
     try:
         listings = scrape_funda(
-            area=filters.selected_area or "amsterdam",
+            area=filters.selected_area,
             offering_type=offering_type,
             price_min=filters.price_min,
             price_max=filters.price_max,

@@ -1,20 +1,22 @@
-"""Phase 2 configurable search filters (single source of truth).
+"""Configurable search filters (single source of truth).
 
 ``FilterConfig`` is the frozen, immutable container for the housing search
 criteria. Values are loaded from the human-editable filter file
-``config/filters.json`` (project-root-relative) via ``from_file()``; the
-Phase 1 hardcoded filter values serve as the defaults. Secrets and
-environment-specific sensitive values stay in ``.env`` (loaded by
-``src/notifier.py``), never in the filter file.
+``config/filters.json`` (project-root-relative) via ``from_file()``. Every
+filter is optional: an absent key (or an explicit ``null``) becomes ``None``
+on the resulting ``FilterConfig``, meaning "no restriction". There are no
+code-level fallback defaults — any shipped starting value (e.g. the
+€550,000–€750,000 Amsterdam criteria) lives only as an actual value written
+in ``config/filters.json``, never injected by the loader when a key is
+absent. Secrets and environment-specific sensitive values stay in ``.env``
+(loaded by ``src/notifier.py``), never in the filter file.
 
-The filter file is organised into two sections so it stays readable for a
-non-developer owner: ``"required"`` holds the four Phase 1 base criteria
-(with their current values), ``"optional"`` lists every optional preference
-key where ``null`` means "no restriction". A key must appear in its own
-section. The older flat layout (all keys at the top level) is still
-accepted for backward compatibility.
+The filter file is a single flat JSON object: one key per filter, where
+``null`` (or ``[]`` for multi-value filters) means "no restriction". A
+top-level ``"note"`` / ``"_comment"`` key is allowed for human documentation
+and is ignored by the loader.
 
-Only this module defines the filter defaults. ``storage.py`` and ``main.py``
+Only this module defines the filter shape. ``storage.py`` and ``main.py``
 must import ``DEFAULT_FILTERS`` / ``FilterConfig`` from here rather than
 redefining them.
 """
@@ -29,26 +31,15 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _FILTERS_PATH = _PROJECT_ROOT / "config" / "filters.json"
 
-# Phase 1 filter defaults (frozen Phase 2 contract).
-_PHASE1_PRICE_MIN = 550_000
-_PHASE1_PRICE_MAX = 750_000
-_PHASE1_BEDROOMS_MIN = 3
-_PHASE1_LIVING_AREA_MIN = 100
-
-# Recognised keys in config/filters.json, split into the two sections of the
-# human-friendly file layout. Unknown keys are rejected so a typo cannot
-# silently fall back to the defaults.
-_REQUIRED_SECTION = "required"
-_OPTIONAL_SECTION = "optional"
-
-_REQUIRED_FILTER_KEYS = (
+# Recognised keys in config/filters.json. Unknown keys are rejected so a typo
+# cannot silently produce a no-restriction filter. The order mirrors the
+# field order on ``FilterConfig``. Every key is optional: absent keys become
+# ``None`` with no code-level fallback default.
+_FILTER_KEYS = (
     "price_min",
     "price_max",
     "bedrooms_min",
     "living_area_min",
-)
-
-_OPTIONAL_FILTER_KEYS = (
     "bedrooms_max",
     "living_area_max",
     "rooms_min",
@@ -80,15 +71,13 @@ _OPTIONAL_FILTER_KEYS = (
     "sort",
 )
 
-_FILTER_KEYS = _REQUIRED_FILTER_KEYS + _OPTIONAL_FILTER_KEYS
-
 # Documentation-only keys tolerated in ``config/filters.json``. JSON has no
 # comments; following the ``"note"`` convention already used in
-# ``config/preferences.json``, a top-level or per-section ``"note"`` (and the
-# ``"_comment"`` alias) carries human documentation. These keys are explicitly
-# ignored by the loader and never become filter fields, so they cannot collide
-# with real filter keys, while a genuine typo of a real key (e.g.
-# ``"bedroom_min"``) is still rejected.
+# ``config/preferences.json``, a top-level ``"note"`` (and the ``"_comment"``
+# alias) carries human documentation. These keys are explicitly ignored by the
+# loader and never become filter fields, so they cannot collide with real
+# filter keys, while a genuine typo of a real key (e.g. ``"bedroom_min"``) is
+# still rejected.
 _DOCUMENTATION_KEYS = ("note", "_comment")
 
 # The energy_labels default order (A++++, A+++, A++, A+, A, B, C, D, A+++++)
@@ -215,82 +204,20 @@ def _normalise_multiselect(
     return normalized
 
 
-def _flatten_filter_file(raw: dict, path: Path) -> dict:
-    """Normalise a parsed filter file into a flat ``{key: value}`` mapping.
-
-    Accepts both supported layouts:
-
-    * the current sectioned layout with ``"required"`` and/or ``"optional"``
-      objects as the only top-level keys, and
-    * the legacy flat layout where filter keys sit at the top level.
-
-    Raises ``ValueError`` when a section is not a JSON object, when a key
-    appears in the wrong section, when an unknown key appears inside a
-    section, or when sectioned and flat layouts are mixed.
-    """
-    if _REQUIRED_SECTION not in raw and _OPTIONAL_SECTION not in raw:
-        return raw
-
-    unknown_top = sorted(
-        key for key in raw
-        if key not in (_REQUIRED_SECTION, _OPTIONAL_SECTION) + _DOCUMENTATION_KEYS
-    )
-    if unknown_top:
-        raise ValueError(
-            f"Filter file {path} mixes filter keys ({', '.join(unknown_top)}) "
-            f'with the "{_REQUIRED_SECTION}"/"{_OPTIONAL_SECTION}" sections. '
-            f"Put every filter key inside its section."
-        )
-
-    flat: dict = {}
-    for section, allowed in (
-        (_REQUIRED_SECTION, frozenset(_REQUIRED_FILTER_KEYS)),
-        (_OPTIONAL_SECTION, frozenset(_OPTIONAL_FILTER_KEYS)),
-    ):
-        if section not in raw:
-            continue
-        body = raw[section]
-        if not isinstance(body, dict):
-            raise ValueError(
-                f'Filter file {path}: "{section}" must be a JSON object, '
-                f"got {type(body).__name__}."
-            )
-        other = (
-            _OPTIONAL_FILTER_KEYS if section == _REQUIRED_SECTION
-            else _REQUIRED_FILTER_KEYS
-        )
-        for key, value in body.items():
-            if key in _DOCUMENTATION_KEYS:
-                continue
-            if key in other:
-                raise ValueError(
-                    f'Filter file {path}: "{key}" belongs in the '
-                    f'"{_OPTIONAL_SECTION if section == _REQUIRED_SECTION else _REQUIRED_SECTION}"'
-                    f" section, not \"{section}\"."
-                )
-            if key not in allowed:
-                raise ValueError(
-                    f"Filter file {path}: unknown key {key!r} in "
-                    f'"{section}" section. Expected keys: '
-                    f"{', '.join(allowed)}."
-                )
-            flat[key] = value
-    return flat
-
-
 @dataclass(frozen=True)
 class FilterConfig:
     """Immutable housing search filter criteria.
 
-    Optional preferences default to ``None``, meaning "no additional
-    preference filter". Direct construction validates the values;
-    ``from_file()`` builds an instance from ``config/filters.json``.
+    Every field is optional and defaults to ``None``, meaning "no
+    restriction". Direct construction validates the values;
+    ``from_file()`` builds an instance from ``config/filters.json`` (absent
+    keys become ``None`` with no code-level fallback).
     """
 
-    price_min: int
-    price_max: int
-    bedrooms_min: int
-    living_area_min: int
+    price_min: int | None = None
+    price_max: int | None = None
+    bedrooms_min: int | None = None
+    living_area_min: int | None = None
     bedrooms_max: int | None = None
     living_area_max: int | None = None
     rooms_min: int | None = None
@@ -322,19 +249,15 @@ class FilterConfig:
     sort: str | None = None
 
     def __post_init__(self) -> None:
-        for name in ("price_min", "price_max", "bedrooms_min", "living_area_min"):
-            value = getattr(self, name)
-            if type(value) is not int:
-                raise ValueError(f"{name} must be an integer, got {value!r}.")
-
-        if self.plot_size_min is not None and type(self.plot_size_min) is not int:
-            raise ValueError(
-                f"plot_size_min must be an integer or None, got {self.plot_size_min!r}."
-            )
-
-        # Optional numeric min/max fields: must be integers or None, and
-        # non-negative. Range consistency (min <= max) is validated below.
+        # Numeric min/max fields: must be integers or None, and non-negative.
+        # Range consistency (min <= max) is validated below. Every check here
+        # is guarded on ``is not None`` so a field left unset imposes no
+        # restriction and is not validated.
         for name in (
+            "price_min",
+            "price_max",
+            "bedrooms_min",
+            "living_area_min",
             "bedrooms_max",
             "living_area_max",
             "rooms_min",
@@ -352,16 +275,8 @@ class FilterConfig:
             if value is not None and value < 0:
                 raise ValueError(f"{name} must not be negative, got {value!r}.")
 
-        for name in ("price_min", "bedrooms_min", "living_area_min"):
-            if getattr(self, name) < 0:
-                raise ValueError(f"{name} must not be negative, got {getattr(self, name)!r}.")
-
-        if self.price_min > self.price_max:
-            raise ValueError(
-                f"price_min ({self.price_min}) must not exceed price_max ({self.price_max})."
-            )
-
         for lo_name, hi_name in (
+            ("price_min", "price_max"),
             ("bedrooms_min", "bedrooms_max"),
             ("living_area_min", "living_area_max"),
             ("rooms_min", "rooms_max"),
@@ -536,11 +451,10 @@ class FilterConfig:
 
         Defaults to ``config/filters.json`` relative to the project root, so
         execution from cron, systemd, or tmux does not depend on the process
-        working directory. The file may use the sectioned layout
-        (``"required"`` / ``"optional"`` objects) or the legacy flat layout.
-        Missing required keys fall back to the Phase 1 defaults; missing
-        optional keys become ``None``. Unknown keys and invalid values raise
-        ``ValueError`` (never silently coerced).
+        working directory. The file is a single flat JSON object; every key
+        is optional and an absent key becomes ``None`` (no restriction).
+        There is no code-level fallback default. Unknown keys and invalid
+        values raise ``ValueError`` (never silently coerced).
         """
         path = Path(path) if path is not None else _FILTERS_PATH
         try:
@@ -555,8 +469,7 @@ class FilterConfig:
                 f"Filter file {path} must contain a JSON object, got {type(raw).__name__}."
             )
 
-        flat = _flatten_filter_file(raw, path)
-        flat = {k: v for k, v in flat.items() if k not in _DOCUMENTATION_KEYS}
+        flat = {k: v for k, v in raw.items() if k not in _DOCUMENTATION_KEYS}
 
         unknown = sorted(key for key in flat if key not in _FILTER_KEYS)
         if unknown:
@@ -566,10 +479,10 @@ class FilterConfig:
             )
 
         return cls(
-            price_min=flat.get("price_min", _PHASE1_PRICE_MIN),
-            price_max=flat.get("price_max", _PHASE1_PRICE_MAX),
-            bedrooms_min=flat.get("bedrooms_min", _PHASE1_BEDROOMS_MIN),
-            living_area_min=flat.get("living_area_min", _PHASE1_LIVING_AREA_MIN),
+            price_min=flat.get("price_min"),
+            price_max=flat.get("price_max"),
+            bedrooms_min=flat.get("bedrooms_min"),
+            living_area_min=flat.get("living_area_min"),
             bedrooms_max=flat.get("bedrooms_max"),
             living_area_max=flat.get("living_area_max"),
             rooms_min=flat.get("rooms_min"),
@@ -580,7 +493,7 @@ class FilterConfig:
             energy_labels=flat.get("energy_labels"),
             transaction_type=flat.get("transaction_type"),
             radius_km=flat.get("radius_km"),
-            selected_area=flat.get("selected_area", "amsterdam"),
+            selected_area=flat.get("selected_area"),
             construction_type=flat.get("construction_type"),
             construction_periods=flat.get("construction_periods"),
             object_type=flat.get("object_type"),
@@ -602,12 +515,7 @@ class FilterConfig:
         )
 
 
-DEFAULT_FILTERS = FilterConfig(
-    price_min=_PHASE1_PRICE_MIN,
-    price_max=_PHASE1_PRICE_MAX,
-    bedrooms_min=_PHASE1_BEDROOMS_MIN,
-    living_area_min=_PHASE1_LIVING_AREA_MIN,
-)
+DEFAULT_FILTERS = FilterConfig()
 
 # ---------------------------------------------------------------------------
 # Retention config (stale-listing archival policy — Task 2 of 4)
