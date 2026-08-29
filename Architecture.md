@@ -536,6 +536,7 @@ media message (see "Property images in notifications"). The format is:
 📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
 ⚡ Energy label: {energy_label}
 🏗 Year built: {year_built}
+🏢 Stories: {stories} [+ Attic]
 🅿️ Parking: {value}
 
 🟢 Pros:
@@ -575,7 +576,8 @@ Bottom line: ...
   the listing; no prose around it.
 * **Metric lines** — `💰 Price`, `🏠 Living area Size` (living area +
   price/m²), `🌳 Plot Size`, `🛏 Bedrooms`, `🌳 Garden area`,
-  `📍 Location`, `⚡ Energy label`, `🏗 Year built`, `🅿️ Parking`.
+  `📍 Location`, `⚡ Energy label`, `🏗 Year built`, `🏢 Stories`,
+  `🅿️ Parking`.
   Lines whose only content would be missing fields are omitted
   entirely.
 * **Score** — intentionally NOT displayed in the notification (Task 9).
@@ -603,11 +605,15 @@ Bottom line: ...
   `notifier.py` at format time; the database `url` column and the
   entire scraping/storage pipeline keep the canonical non-English URL
   unchanged.
+* **Stories** — `🏢 Stories: {stories}` is shown only when `stories` is
+  non-null (from "Aantal woonlagen" in the Indeling subsection); the
+  value renders `{stories} + Attic` when `has_attic` is truthy. The line
+  is omitted entirely when `stories` is absent — an attic without a
+  known story count is not displayed.
 * **Not displayed** — property type, listing status, ownership wording
   (Dutch terminology such as `Eengezinswoning`, `Beschikbaar`,
   `Erfpacht`), and the Garage line (not part of the approved
-  template). "Number of stories" is omitted because the project does
-  not extract the number of floors.
+  template).
 * **Pros / Cons / Bottom line** (Task 10) — every notification
   carries 🟢 Pros and 🔴 Cons (max 5 bullets each) plus a one-sentence
   Bottom line. Bullets come first from Dutch keyword phrases actually
@@ -643,6 +649,7 @@ placeholder values:
 📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
 ⚡ Energy label: {energy_label}
 🏗 Year built: {year_built}
+🏢 Stories: {stories} [+ Attic]
 🅿️ Parking: {value}
 ```
 

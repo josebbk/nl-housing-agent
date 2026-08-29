@@ -473,6 +473,7 @@ def _format_listing_message(listing: dict) -> str:
         📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
         ⚡ Energy label: {label}
         🏗 Year built: {year_built}
+        🏢 Stories: {stories} [+ Attic]
         🅿️ Parking: {value}
 
         🟢 Pros:
@@ -487,9 +488,11 @@ def _format_listing_message(listing: dict) -> str:
 
     * every metric line follows ``EMOJI + English metric name + ":" +
       value``;
-    * missing metrics are omitted — never invented. "Number of stories"
-      is omitted because the project does not extract the number of
-      floors;
+    * missing metrics are omitted — never invented;
+    * Stories — shown only when ``stories`` is non-null; "Attic" is
+      appended to the value when ``has_attic`` is truthy. The line is
+      omitted entirely when ``stories`` is absent (an attic without a
+      known story count is not shown);
     * price-per-m² is computed only from the two required fields
       (price, living_area_m2);
     * non-numeric values are English; raw Dutch source terminology is
@@ -563,6 +566,13 @@ def _format_listing_message(listing: dict) -> str:
 
     if listing.get("year_built"):
         parts.append(f"\U0001f3d7 Year built: {listing['year_built']}")
+
+    stories = listing.get("stories")
+    if stories:
+        stories_text = str(stories)
+        if listing.get("has_attic"):
+            stories_text += " + Attic"
+        parts.append(f"\U0001f3e2 Stories: {stories_text}")
 
     parts.append(
         f"\U0001f17f\ufe0f Parking: {_parking_value(listing.get('parking_type'))}"

@@ -236,6 +236,7 @@ minimum and includes:
 
 * bedrooms, neighborhood, price per m²
 * plot size, energy label, construction year
+* number of stories (shown only when known), with an attic flag
 * garden area and parking (always shown, values in English)
 * a more precise location: city and street (area/district and postal
   code are not extracted and are never invented), with a "Location On
@@ -269,8 +270,11 @@ types) are converted to English at presentation level, keeping the
 original Dutch term in parentheses where the scraped value is Dutch.
 
 Fields that a listing does not expose are omitted from the message —
-values are never invented or shown as placeholders. "Number of stories"
-is omitted because the project does not extract the number of floors.
+values are never invented or shown as placeholders. The `🏢 Stories`
+line is shown only when the story count is known (`{stories}`), with
+` + Attic` appended when an attic is present; the line is omitted
+entirely when the story count is unknown (an attic without a known
+story count is not shown).
 Every notification carries `🟢 Pros` / `🔴 Cons` bullet lists (max 5
 each) and a one-sentence `Bottom line`: bullets are generated first
 from phrases actually present in the extracted property description,
