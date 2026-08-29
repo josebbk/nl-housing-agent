@@ -467,6 +467,8 @@ insulation_score REAL
 heating_type TEXT
 boiler_year INTEGER
 bathrooms INTEGER
+stories INTEGER
+has_attic INTEGER
 neighborhood_avg_price_m2 REAL
 image_urls TEXT
 score INTEGER
@@ -518,10 +520,10 @@ available.
 
 The notification message follows the owner-approved template: bold
 address title, metric lines in `EMOJI + English metric name + ":" +
-value` form, the Funda link riding on the Location line, and no Score
-display. The text is delivered together with the property photos as one
-Telegram media message (see "Property images in notifications"). The
-format is:
+value` form, a "Location On Map" link riding on the Location line, a
+"View on Funda" link after the Bottom line, and no Score display. The
+text is delivered together with the property photos as one Telegram
+media message (see "Property images in notifications"). The format is:
 
 ```
 <b>{address}</b>
@@ -531,7 +533,7 @@ format is:
 🌳 Plot Size: {plot_size_m2} m²
 🛏 Bedrooms: {bedrooms}
 🌳 Garden area: {garden_size_m2} m² / Yes / No
-📍 Location: {city} · {street} · <a href="{url}">View on Funda</a>
+📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
 ⚡ Energy label: {energy_label}
 🏗 Year built: {year_built}
 🅿️ Parking: {value}
@@ -545,7 +547,17 @@ format is:
 • ...
 
 Bottom line: ...
+
+<a href="{english_url}">View on Funda</a>
 ```
+
+> **Superseded (Task 11):** the "View on Funda" link previously rode
+> inline on the Location line, pointing at the stored canonical URL. It
+> was moved to its own line after the Bottom line and now points at the
+> English variant of the URL; the Location line instead carries a
+> "Location On Map" link to the English URL with a `/kaart` suffix. The
+> stored `url` remains the canonical non-English URL — the English and
+> map URLs are derived at format time inside `notifier.py` only.
 
 > **Superseded (Task 8):** the previous "Task 7" layout used metric
 > lines without names/colons (e.g. `💰 €{price}`), a `✨` key-facts
@@ -577,12 +589,20 @@ Bottom line: ...
 * **Garden area** — the size in m² when `garden_size_m2` is available,
   otherwise `Yes` (garden present) or `No`.
 * **Location** — uses the available components in the order City →
-  Area/District → Street → Postal code, and carries the Funda link
+  Area/District → Street → Postal code, and carries the "Location On
+  Map" link (the stored URL's English variant with a `/kaart` suffix)
   inline. City comes from `neighborhood` (capitalized); Street is
   derived from the address by stripping the trailing house number and
   is omitted when no house number can be identified (a street is never
   guessed). Area/District and Postal code are not extracted by the
   project and are never fabricated.
+* **View on Funda link** (Task 11) — a `View on Funda` link is appended
+  on its own line after the Bottom line, pointing at the English
+  variant of the stored URL (no `/kaart` suffix). The URL conversions
+  (canonical → `/en/detail/…` and `/en/detail/…/kaart`) happen only in
+  `notifier.py` at format time; the database `url` column and the
+  entire scraping/storage pipeline keep the canonical non-English URL
+  unchanged.
 * **Not displayed** — property type, listing status, ownership wording
   (Dutch terminology such as `Eengezinswoning`, `Beschikbaar`,
   `Erfpacht`), and the Garage line (not part of the approved
@@ -620,7 +640,7 @@ placeholder values:
 🌳 Plot Size: {plot_size_m2} m²
 🛏 Bedrooms: {bedrooms}
 🌳 Garden area: {garden_size_m2} m² / Yes / No
-📍 Location: {city} · {street} · <a href="{url}">View on Funda</a>
+📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
 ⚡ Energy label: {energy_label}
 🏗 Year built: {year_built}
 🅿️ Parking: {value}
@@ -1372,6 +1392,8 @@ data/funda.db
 | `bedrooms`       | INTEGER NOT NULL  | Number of bedrooms                                |
 | `plot_size_m2`   | INTEGER           | Nullable                                             |
 | `rooms`          | INTEGER           | Number of rooms; NULL (only available on detail pages) |
+| `stories`        | INTEGER           | Number of floors ("Aantal woonlagen"); NULL when absent on the detail page |
+| `has_attic`      | INTEGER           | Boolean 0/1: "zolder" present in "Aantal woonlagen"; always a concrete 0/1 after any detail fetch, never NULL |
 | `property_type`  | TEXT              | Property type; NULL when not derivable from the card |
 | `year_built`     | INTEGER           | Nullable                                             |
 | `energy_label`   | TEXT              | Nullable                                             |

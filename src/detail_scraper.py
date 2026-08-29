@@ -95,6 +95,8 @@ class DetailData:
     heating_type: Optional[str] = None
     boiler_year: Optional[int] = None
     bathrooms: Optional[int] = None
+    stories: Optional[int] = None
+    has_attic: bool = False
     neighborhood_avg_price_m2: Optional[float] = None
     detail_fetched_at: Optional[str] = None
     rooms: Optional[int] = None
@@ -945,6 +947,48 @@ def _extract_bathrooms(body: Optional[str]) -> Optional[int]:
     return None
 
 
+def _extract_stories_and_attic(body: Optional[str]) -> tuple[Optional[int], bool]:
+    """Extract stories count and has_attic from the "Aantal woonlagen" field.
+
+    The field lives in the "Indeling" subsection (sibling of "Aantal
+    kamers" and "Aantal badkamers"). Returns (stories, has_attic):
+
+    * stories — the LEADING number of the field value ("3 woonlagen en
+      een zolder" -> 3, "1 woonlaag" -> 1, "2 woonlagen" -> 2). The attic
+      ("zolder") is never added to this count.
+    * has_attic — True when "zolder" appears (case-insensitive) anywhere
+      in the same field value, else False.
+
+    When the field is absent, returns (None, False). When the field is
+    present but has no leading integer, stories is None (logged) and
+    has_attic is still resolved from the value — never None.
+    """
+    if not body:
+        return None, False
+
+    raw = _extract_field_until_next(body, "Aantal woonlagen", [
+        "Voorzieningen", "Aantal kamers", "Aantal badkamers",
+        "Overdracht", "Bouw", "Energie", "Oppervlakten", "Kadastrale",
+        "Buitenruimte", "Garage", "Parkeergelegenheid", "Bergruimte",
+    ])
+    if not raw:
+        return None, False
+
+    has_attic = "zolder" in raw.lower()
+
+    m = re.search(r"(\d+)", raw)
+    if m:
+        try:
+            return int(m.group(1)), has_attic
+        except ValueError:
+            pass
+
+    logger.warning(
+        "Aantal woonlagen field found but no leading number parsed: %r", raw,
+    )
+    return None, has_attic
+
+
 def _extract_neighborhood_avg_price(body: Optional[str]) -> Optional[float]:
     """Extract neighborhood_avg_price_m2 from Buurt section."""
     if not body:
@@ -990,18 +1034,21 @@ def _extract_rooms(body: Optional[str]) -> Optional[int]:
 
 
 def _extract_property_type(kenmerken_body: Optional[str]) -> Optional[str]:
-    """Extract property_type from Kenmerken body (Bouw -> Soort woonhuis)."""
+    """Extract property_type from the Bouw subsection by field-LABEL presence.
+
+    Returns "House" when the "Soort woonhuis" label is present, else
+    "Appartement" when "Soort appartement" is present, else None. Only the
+    label presence matters — the field value is not used, and no other
+    source (title, URL, etc.) is consulted. Both labels live in the Bouw
+    subsection (the same subsection `_extract_year_built` reads from).
+    """
     if not kenmerken_body:
         return None
 
-    # Use _extract_field_until_next for boundary-aware extraction
-    property_type = _extract_field_until_next(kenmerken_body, "Soort woonhuis", [
-        "Soort bouw", "Bouwjaar", "Specifiek", "Oppervlakten", "Indeling",
-        "Energie", "Overdracht", "Kadastrale", "Buitenruimte", "Garage",
-        "Parkeergelegenheid", "Bergruimte",
-    ])
-    if property_type:
-        return property_type
+    if re.search(r"Soort woonhuis", kenmerken_body, re.IGNORECASE):
+        return "House"
+    if re.search(r"Soort appartement", kenmerken_body, re.IGNORECASE):
+        return "Appartement"
 
     return None
 
@@ -1375,6 +1422,12 @@ def fetch_listing_details(url: str) -> dict:
                 bathrooms = _extract_bathrooms(kenmerken_body)
                 if bathrooms:
                     result.bathrooms = bathrooms
+
+                # --- Aantal woonlagen (stories) & attic (Indeling subsection) ---
+                stories, has_attic = _extract_stories_and_attic(kenmerken_body)
+                if stories is not None:
+                    result.stories = stories
+                result.has_attic = has_attic
 
                 # --- Buurt section ---
                 buurt_body = _find_section_body(sections, "Buurt")

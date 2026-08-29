@@ -138,6 +138,38 @@ def _street_from_address(address: str) -> str | None:
     return None
 
 
+_EN_DETAIL_MARKER = "/en/detail/"
+
+
+def _english_url(url: str) -> str:
+    """Convert a canonical Funda URL into its English variant.
+
+    Only the FIRST occurrence of "/detail/" is replaced with
+    "/en/detail/". An already-English URL (one that already contains
+    "/en/detail/") is returned unchanged so it is never double-prefixed.
+    """
+    if not url:
+        return url
+    if _EN_DETAIL_MARKER in url:
+        return url
+    return url.replace("/detail/", "/en/detail/", 1)
+
+
+def _map_url(url: str) -> str:
+    """Build the Funda map URL from a canonical listing URL.
+
+    Uses the English variant of the URL with a single "/kaart" segment
+    appended after the listing ID, e.g.
+    https://www.funda.nl/en/detail/koop/assendelft/huis-dorpsstraat-138-b/44579743/kaart.
+    Trailing slashes are stripped first so a double slash is never
+    produced, whether or not the input URL ends in "/".
+    """
+    english = _english_url(url)
+    if not english:
+        return english
+    return english.rstrip("/") + "/kaart"
+
+
 # ---------------------------------------------------------------------------
 # Pros / Cons / Bottom line extraction from the property description
 # ---------------------------------------------------------------------------
@@ -438,10 +470,18 @@ def _format_listing_message(listing: dict) -> str:
         🌳 Plot Size: {plot_size_m2} m²
         🛏 Bedrooms: {bedrooms}
         🌳 Garden area: {garden_size_m2} m² / Yes / No
-        📍 Location: {city} · {street} · <a href="{url}">View on Funda</a>
+        📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
         ⚡ Energy label: {label}
         🏗 Year built: {year_built}
         🅿️ Parking: {value}
+
+        🟢 Pros:
+        • ...
+        🔴 Cons:
+        • ...
+        Bottom line: ...
+
+        <a href="{english_url}">View on Funda</a>
 
     Rules:
 
@@ -457,11 +497,14 @@ def _format_listing_message(listing: dict) -> str:
     * the address is kept exactly as provided; Location combines the
       available components in the order City → Area/District → Street →
       Postal code (Area/District and Postal code are never invented)
-      and carries the Funda link;
+      and carries a "Location On Map" link derived from the stored URL;
     * every notification carries 🟢 Pros and 🔴 Cons sections plus a
       Bottom line. Bullets come first from phrases actually present in
       the extracted description text (detail_scraper ``description``
       field), then from the listing's own data — never fabricated.
+    * a "View on Funda" link (English variant of the stored URL) is
+      appended after the Bottom line. The stored URL is left canonical;
+      the English and map URLs are computed at format time only.
     """
     address = listing.get("address", "N/A")
     price = listing.get("price")
@@ -511,7 +554,7 @@ def _format_listing_message(listing: dict) -> str:
             if street:
                 location_bits.append(street)
         if url:
-            location_bits.append(f'<a href="{url}">View on Funda</a>')
+            location_bits.append(f'<a href="{_map_url(url)}">Location On Map</a>')
         parts.append("\U0001f4cd Location: " + " \u00b7 ".join(location_bits))
 
     energy_label = listing.get("energy_label")
@@ -569,6 +612,10 @@ def _format_listing_message(listing: dict) -> str:
     if bottom_line:
         parts.append("")
         parts.append(bottom_line)
+
+    if url:
+        parts.append("")
+        parts.append(f'<a href="{_english_url(url)}">View on Funda</a>')
 
     return "\n".join(parts)
 

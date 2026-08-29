@@ -238,8 +238,14 @@ minimum and includes:
 * plot size, energy label, construction year
 * garden area and parking (always shown, values in English)
 * a more precise location: city and street (area/district and postal
-  code are not extracted and are never invented), with the Funda link
-  inline on the Location line
+  code are not extracted and are never invented), with a "Location On
+  Map" link inline on the Location line (the English variant of the
+  listing URL with a `/kaart` suffix)
+* a `View on Funda` link on its own line after the Bottom line,
+  pointing at the English variant of the listing URL (no `/kaart`
+  suffix). The English and map URLs are derived at format time from the
+  stored canonical URL; the database continues to store the original
+  non-English URL unchanged.
 * **up to 3 property photos of the same listing**, delivered together
   with the text as one coherent Telegram media message: the
   notification text rides as the caption of the photo (or photo

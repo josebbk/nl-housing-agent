@@ -27,6 +27,32 @@ that addresses the root cause in the extraction layer.
 
 (newest entries at the top)
 
+### 2026-08-29 — property_type stored raw "Soort woonhuis" value instead of a stable label
+
+- **Symptom:** The `property_type` column contained the free-text value of
+  the "Soort woonhuis" field verbatim (e.g. "Eengezinswoning, hoekwoning"),
+  so downstream consumers had no stable "House" vs "Appartement" signal —
+  the stored value varied with Funda's own wording.
+
+- **Diagnosis:** `detail_scraper.py::_extract_property_type()` used
+  `_extract_field_until_next()` to grab the value immediately following the
+  "Soort woonhuis" label and returned it unchanged. Funda emits property
+  type in the **Bouw** subsection of Kenmerken under two distinct labels:
+  "Soort woonhuis" (houses) and "Soort appartement" (apartments). The
+  free-text value is not a reliable equality key.
+
+- **Fix:** Rewrote `_extract_property_type()` to classify by **label
+  presence** in the Bouw subsection instead of by value: "Soort woonhuis"
+  present → `"House"`, else "Soort appartement" present → `"Appartement"`,
+  else `None`. No fallback to title/URL or any other source. Verified live
+  against a house listing (→ "House") and an apartment listing
+  (→ "Appartement").
+
+- **Pattern/Warning:** When a field's value is free-form prose, classify by
+  the presence of the field LABEL (which is stable) rather than parsing the
+  value itself. Funda's "Soort woonhuis" / "Soort appartement" label pair
+  in the Bouw subsection is the reliable property-type discriminator.
+
 ### 2026-08-19 — Zero-result total count still scraped all max_pages
 
 - **Symptom:** When the extracted total listing count was genuinely 0
