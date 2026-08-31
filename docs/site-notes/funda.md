@@ -27,6 +27,35 @@ that addresses the root cause in the extraction layer.
 
 (newest entries at the top)
 
+### 2026-08-31 — Promotional tagline accepted as address (no colons / commas)
+
+- **Symptom:** For a promoted listing (Hoofddorp Noordvaarder 23, id
+  44572336) the card-level `address` was extracted as
+  `"Uitgebouwde eindwoning met zonnige tuin op het zuidwesten"` instead of
+  `"Noordvaarder 23"`.
+
+- **Diagnosis:** The card-level address extraction in
+  `scraper.py::_extract_listing_data` iterates through card text lines and
+  skips badge words, postcodes, prices, area measurements, and promo lines
+  with colons/exclamation marks or lines longer than 40 chars with commas.
+  The promotional tagline `"Uitgebouwde eindwoning met zonnige tuin op het
+  zuidwesten"` has no colons, no exclamation marks, and no commas, so it
+  passed all existing filters and was accepted as the address.
+
+- **Fix:** Added `_HOUSE_NUM_END_RE` regex (`\s+\d+(?:[A-Za-z]+|\-\d+)?\s*$`)
+  that checks whether a candidate line ends with a valid Dutch house number
+  — digits optionally followed by a letter suffix (12A) or a hyphenated
+  number (12-1). The check is applied in both the primary address-extraction
+  loop and the fallback loop. A legitimate Dutch address always ends with a
+  house number; a promotional tagline never does.
+
+- **Pattern/Warning:** The existing skip heuristics (colons, exclamation marks,
+  length+comma) catch many promo lines but not all — any promo line without
+  those specific features can slip through. The house-number requirement is
+  a structural invariant: Dutch addresses always end with a number, so this
+  filter is definitive and catches any promo line regardless of its specific
+  punctuation.
+
 ### 2026-08-31 — "Open huis" badge leaked into address; neighborhood limited to city slug
 
 - **Symptom:** For a promoted listing (Purmerend Incastraat 19, id 44573601)

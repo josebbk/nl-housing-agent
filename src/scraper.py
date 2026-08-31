@@ -371,6 +371,15 @@ def extract_total_listing_count(page_text: str) -> Optional[int]:
 # Listing extraction from DOM text
 # ---------------------------------------------------------------------------
 
+# House number at end of line: the last whitespace-delimited token must be
+# a valid Dutch house number — digits optionally followed by a letter suffix
+# (e.g. 12A) or a hyphenated number (e.g. 12-1).  This prevents promotional
+# taglines and other non-address text from being accepted as the address.
+_HOUSE_NUM_END_RE = re.compile(
+    r"\s+\d+(?:[A-Za-z]+|\-\d+)?\s*$",
+)
+
+
 def _extract_listing_data(text: str, href: str) -> Optional[dict]:
     """Parse a Funda listing card's full text + href into a dict.
 
@@ -492,6 +501,12 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
         # Street addresses are usually short (e.g. "Dwarswatering 10").
         if len(line) > 40 and "," in line:
             continue
+        # Skip lines that do not end with a house number — a legitimate Dutch
+        # address always ends with a number (optionally with a letter suffix
+        # like 12A or a hyphenated number like 12-1).  This filters out
+        # promotional taglines and other non-address prose.
+        if not _HOUSE_NUM_END_RE.search(line):
+            continue
         # This should be the address
         address = line
         break
@@ -500,7 +515,7 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
     rooms = None
 
     if not address:
-        # Fallback: first non-badge line
+        # Fallback: first non-badge line that ends with a house number
         concat_pattern = re.compile(
             r'^(' + '|'.join(badge_words) + r')+$',
         )
@@ -511,6 +526,8 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
             if re.match(r"^\d{4}[A-Z]{2}\s*[A-Z]{0,2}\d{0,2}$", line):
                 continue
             if re.match(r"^\d{4}[A-Z]{2}\s+[A-Z][a-z]+(\s+[A-Z][a-z]+)*$", line):
+                continue
+            if not _HOUSE_NUM_END_RE.search(line):
                 continue
             address = line
             break
