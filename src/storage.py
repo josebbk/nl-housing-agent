@@ -79,9 +79,9 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                 # and any later additions (e.g. image_urls). Adding an entry
                 # here is the project's schema-migration mechanism: idempotent
                 # ALTER TABLE ADD COLUMN, safe on legacy databases, never
-                # destructive. listings_archive must always mirror the
-                # listings column set AND order because archival copies rows
-                # via ``INSERT OR REPLACE ... SELECT *``.
+                # destructive. listings_archive must always expose the same
+                # column set as listings; physical order is repaired
+                # automatically below when the two tables drift.
                 phase2_columns = [
                     ("ownership_type", "TEXT"),
                     ("erfpacht_canon_annual", "REAL"),
@@ -184,24 +184,50 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
                                     col_name, table, e,
                                 )
 
-                # Runtime consistency check: the two tables must expose the
-                # same columns in the same order, because archival copies rows
-                # via ``INSERT OR REPLACE INTO listings_archive SELECT * FROM
-                # listings``, which is order-sensitive.
-                listings_cols = [
-                    row[1] for row in cursor.execute(
-                        "PRAGMA table_info(listings);"
-                    ).fetchall()
-                ]
-                archive_cols = [
-                    row[1] for row in cursor.execute(
-                        "PRAGMA table_info(listings_archive);"
-                    ).fetchall()
-                ]
+                # Verify the two tables now agree on both column SET and
+                # physical ORDER. The ADD COLUMN loop above guarantees the
+                # set matches; the order can still differ when a legacy
+                # ``listings_archive`` was created before later columns were
+                # appended to ``listings``. In that case rebuild the archive
+                # in ``listings`` order (a name-based, row-preserving copy) so
+                # ``INSERT ... SELECT`` copies can never misalign.
+                listings_info = cursor.execute(
+                    "PRAGMA table_info(listings);"
+                ).fetchall()
+                archive_info = cursor.execute(
+                    "PRAGMA table_info(listings_archive);"
+                ).fetchall()
+                listings_cols = [row[1] for row in listings_info]
+                archive_cols = [row[1] for row in archive_info]
+
+                if set(listings_cols) != set(archive_cols):
+                    raise sqlite3.OperationalError(
+                        "listings and listings_archive have different columns "
+                        f"(listings_only="
+                        f"{sorted(set(listings_cols) - set(archive_cols))}, "
+                        f"archive_only="
+                        f"{sorted(set(archive_cols) - set(listings_cols))})."
+                    )
+
+                if listings_cols != archive_cols:
+                    logger.warning(
+                        "listings_archive column order differs from listings; "
+                        "rebuilding listings_archive in listings order "
+                        "(one-time repair, no rows lost)."
+                    )
+                    _rebuild_archive_in_listings_order(cursor)
+                    archive_cols = [
+                        row[1] for row in cursor.execute(
+                            "PRAGMA table_info(listings_archive);"
+                        ).fetchall()
+                    ]
+
+                # Final consistency check: after any repair the two tables
+                # must agree on column names AND physical order.
                 if listings_cols != archive_cols:
                     raise sqlite3.OperationalError(
-                        "listings and listings_archive columns out of sync: "
-                        f"listings={listings_cols}, "
+                        "listings and listings_archive columns out of sync "
+                        f"after repair: listings={listings_cols}, "
                         f"listings_archive={archive_cols}."
                     )
 
@@ -209,6 +235,47 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
     except sqlite3.Error as e:
         logger.exception("Failed to initialize database at %s: %s", db_path, e)
         raise
+
+
+def _rebuild_archive_in_listings_order(cursor: sqlite3.Cursor) -> None:
+    """Rebuild ``listings_archive`` with the exact column order of ``listings``.
+
+    One-time, idempotent repair for databases whose ``listings_archive`` was
+    built before later ``ALTER TABLE ADD COLUMN`` calls, leaving the same
+    column *set* as ``listings`` but in a different physical order (which a
+    ``SELECT *`` copy would silently misalign). Copies every archived row
+    across by explicit column name — never losing rows — then swaps the
+    tables in place. Must run inside a transaction.
+    """
+    cursor.execute("DROP TABLE IF EXISTS listings_archive_new;")
+
+    listings_info = cursor.execute("PRAGMA table_info(listings);").fetchall()
+    col_defs: list[str] = []
+    col_names: list[str] = []
+    for _cid, name, ctype, notnull, dflt, pk in listings_info:
+        col_names.append(name)
+        parts = [name]
+        if ctype:
+            parts.append(ctype)
+        if pk:
+            parts.append("PRIMARY KEY")
+        if notnull:
+            parts.append("NOT NULL")
+        if dflt is not None:
+            parts.append(f"DEFAULT {dflt}")
+        col_defs.append(" ".join(parts))
+
+    col_list = ", ".join(col_names)
+    cursor.execute(
+        f"CREATE TABLE listings_archive_new ({', '.join(col_defs)});"
+    )
+    cursor.execute(
+        f"INSERT INTO listings_archive_new ({col_list}) "
+        f"SELECT {col_list} FROM listings_archive;"
+    )
+    cursor.execute("DROP TABLE listings_archive;")
+    cursor.execute("ALTER TABLE listings_archive_new RENAME TO listings_archive;")
+
 
 def _encode_image_urls(value) -> str | None:
     """Encode an image_urls value for storage as a JSON TEXT column.
@@ -724,12 +791,21 @@ def archive_stale_listings(
                 return 0
 
             with conn:
-                # Copy matching rows into the archive (INSERT OR REPLACE
-                # handles the edge-case of a listing that was previously
-                # archived and reappeared).
+                # Copy matching rows into the archive using an explicit,
+                # order-independent column-name list on both sides. Physical
+                # column order is irrelevant here, so this is correct even if
+                # the two tables' columns are ordered differently.
+                # INSERT OR REPLACE handles the edge-case of a listing that
+                # was previously archived and reappeared.
+                col_names = [
+                    row[1] for row in conn.execute(
+                        "PRAGMA table_info(listings);"
+                    ).fetchall()
+                ]
+                col_list = ", ".join(col_names)
                 conn.execute(
-                    "INSERT OR REPLACE INTO listings_archive SELECT * "
-                    "FROM listings WHERE " + stale_where,
+                    f"INSERT OR REPLACE INTO listings_archive ({col_list}) "
+                    f"SELECT {col_list} FROM listings WHERE " + stale_where,
                     (cutoff, cutoff),
                 )
 
