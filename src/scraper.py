@@ -451,7 +451,10 @@ def _extract_listing_data(text: str, href: str) -> Optional[dict]:
     # the first line, so we skip those.
     # Promoted/featured cards also have a promo description line before the
     # address (e.g. "Turn-key woning: direct genieten van comfort en stijl!").
-    badge_words = {"nieuw", "blikvanger", "advertentie", "verkoop", "verkoopwoning"}
+    badge_words = {
+        "nieuw", "blikvanger", "advertentie", "verkoop", "verkoopwoning",
+        "open huis", "openhuis",
+    }
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     address = None
     # Build regex for concatenated badge words (e.g. "BlikvangerNieuw").

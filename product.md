@@ -242,10 +242,11 @@ minimum and includes:
 * plot size, energy label, construction year
 * number of stories (shown only when known), with an attic flag
 * garden area and parking (always shown, values in English)
-* a more precise location: city and street (area/district and postal
-  code are not extracted and are never invented), with a "Location On
-  Map" link inline on the Location line (the English variant of the
-  listing URL with a `/kaart` suffix)
+* a more precise location: the neighborhood string
+  (`{neighborhood} - {postal code} {city}`, enriched from the detail
+  page's address header) plus the street, with a "Location On Map" link
+  inline on the Location line (the English variant of the listing URL
+  with a `/kaart` suffix)
 * a `View on Funda` link on its own line after the Bottom line,
   pointing at the English variant of the listing URL (no `/kaart`
   suffix). The English and map URLs are derived at format time from the
@@ -262,7 +263,7 @@ minimum and includes:
 The notification text follows the owner-approved template: the bold
 address as title, then metric-only lines, each following
 `EMOJI + English metric name + ":" + value` (e.g. `💰 Price: €599,000`,
-`🏠 Living area Size: 133 m² · €4,504/m²`, `🅿️ Parking: Available
+`🏠 Living area: 133 m² · €4,504/m²`, `🅿️ Parking: Available
 (Parkeervergunning)`). The match score is **not displayed** (score
 calculation and score-based logic remain unchanged). The address is
 kept exactly as provided by the listing. No Dutch property terminology

@@ -27,6 +27,50 @@ that addresses the root cause in the extraction layer.
 
 (newest entries at the top)
 
+### 2026-08-31 — "Open huis" badge leaked into address; neighborhood limited to city slug
+
+- **Symptom:** For a promoted listing (Purmerend Incastraat 19, id 44573601)
+  the card-level `address` was extracted as `"BlikvangerNieuwOpen huis"`
+  instead of `"Incastraat 19"`, and `neighborhood` was only the city slug
+  `"purmerend"` (from the URL path) instead of the fuller
+  `"Amerika - 1448 XS Purmerend"`.
+
+- **Diagnosis:** Two separate gaps.
+  1. The promoted-card badge skip list in `scraper.py::_extract_listing_data`
+     covered `nieuw`, `blikvanger`, `advertentie`, `verkoop`, `verkoopwoning`
+     but not the multi-word `"Open huis"` badge. On this card the three badge
+     spans render with no whitespace between them as
+     `"BlikvangerNieuwOpen huis"`, which the concatenation regex
+     `^(badge|...)+$` could not match (because `"open huis"` was absent), so
+     that line was accepted as the address.
+  2. The `neighborhood` field was populated only from the URL slug
+     (`/detail/koop/{city}/…`) at card level. The neighborhood name, postal
+     code and city are only available on the detail page's address header.
+
+- **Fix:**
+  1. Added `"open huis"` and `"openhuis"` to the badge-word set in
+     `scraper.py::_extract_listing_data`, so multi-word badge concatenations
+     like `"BlikvangerNieuwOpen huis"` are skipped and the real address line
+     (`"Incastraat 19"`) is picked.
+  2. Added `detail_scraper._extract_neighborhood()` which parses the detail
+     page's address `<h1>` (street span → postal+city span → neighborhood
+     `<a aria-label>`), normalizes to `"{neighborhood} - {postal} {city}"`,
+     and stores it in the `neighborhood` field (a new field on `DetailData`).
+     The detail result merges over the card-level slug via the existing
+     `listing.update(detail)` flow in `main.py::_score_and_persist_listing`,
+     so required-field enforcement is unaffected (the card-level slug is
+     still present before any detail fetch).
+
+- **Pattern/Warning:** Funda badge words concatenate with no separator, and a
+  single badge can itself contain spaces (`"Open huis"`), so the badge skip
+  list must include multi-word badge strings as whole tokens. Two further
+  badge strings were observed on live cards — `"Onder bod"` and
+  `"Verkocht onder voorbehoud"` (listing-status badges) — but were not added:
+  the current search's `availability=available` filter excludes those
+  statuses. If a future filter change surfaces them, add them to
+  `badge_words`. The neighborhood name is now sourced from the detail page,
+  not the URL slug.
+
 ### 2026-08-29 — property_type stored raw "Soort woonhuis" value instead of a stable label
 
 - **Symptom:** The `property_type` column contained the free-text value of

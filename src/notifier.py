@@ -455,6 +455,18 @@ def _get_chat_id() -> str:
     return chat_id
 
 
+def _get_listing_topic_id() -> str:
+    """Return the Telegram listing-notification topic ID from environment."""
+    _load_env()
+    topic_id = os.environ.get("TELEGRAM_MESSAGE_THREAD_ID", "")
+    if not topic_id:
+        logger.warning(
+            "TELEGRAM_MESSAGE_THREAD_ID is not set; listing notifications "
+            "will not include a message_thread_id."
+        )
+    return topic_id
+
+
 def _format_listing_message(listing: dict) -> str:
     """Format a listing dict into the approved Telegram HTML template.
 
@@ -466,10 +478,10 @@ def _format_listing_message(listing: dict) -> str:
         <b>{address}</b>
 
         💰 Price: €{price}
-        🏠 Living area Size: {living_area} m² · €{price/m²}/m²
+        🏠 Living area: {living_area} m² · €{price/m²}/m²
         🌳 Plot Size: {plot_size_m2} m²
         🛏 Bedrooms: {bedrooms}
-        🌳 Garden area: {garden_size_m2} m² / Yes / No
+        🌿 Garden area: {garden_size_m2} m² / Yes / No
         📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
         ⚡ Energy label: {label}
         🏗 Year built: {year_built}
@@ -530,7 +542,7 @@ def _format_listing_message(listing: dict) -> str:
 
     parts.append(f"\U0001f4b0 Price: {price_text}")
 
-    size_line = f"\U0001f3e0 Living area Size: {area_text}"
+    size_line = f"\U0001f3e0 Living area: {area_text}"
     if price_per_m2_text:
         size_line += f" \u00b7 {price_per_m2_text}"
     parts.append(size_line)
@@ -547,12 +559,12 @@ def _format_listing_message(listing: dict) -> str:
         garden_text = "Yes"
     else:
         garden_text = "No"
-    parts.append(f"\U0001f333 Garden area: {garden_text}")
+    parts.append(f"\U0001f33f Garden area: {garden_text}")
 
     if neighborhood or url:
         location_bits = []
         if neighborhood:
-            location_bits.append(neighborhood.title())
+            location_bits.append(neighborhood)
             street = _street_from_address(address if address != "N/A" else "")
             if street:
                 location_bits.append(street)
@@ -630,7 +642,9 @@ def _format_listing_message(listing: dict) -> str:
     return "\n".join(parts)
 
 
-def _send_message(token: str, chat_id: str, message: str) -> bool:
+def _send_message(
+    token: str, chat_id: str, message: str, thread_id: str = "",
+) -> bool:
     """Send a single message via the Telegram Bot API.
 
     Returns True on success, False on failure.
@@ -638,11 +652,15 @@ def _send_message(token: str, chat_id: str, message: str) -> bool:
     """
     url = f"{_TELEGRAM_API_BASE}{_SEND_MSG_PATH.format(token=token)}"
 
-    payload = json.dumps({
+    payload_data = {
         "chat_id": chat_id,
         "text": message,
         "parse_mode": "HTML",
-    }).encode("utf-8")
+    }
+    if thread_id:
+        payload_data["message_thread_id"] = thread_id
+
+    payload = json.dumps(payload_data).encode("utf-8")
 
     headers = {"Content-Type": "application/json"}
     req = request.Request(url, data=payload, headers=headers, method="POST")
@@ -864,6 +882,7 @@ def _post_multipart(
 
 def _send_images(
     token: str, chat_id: str, image_paths: list, caption: str = "",
+    thread_id: str = "",
 ) -> bool:
     """Send 1..n downloaded images as one Telegram media message.
 
@@ -881,6 +900,8 @@ def _send_images(
     try:
         if len(image_paths) == 1:
             fields = {"chat_id": chat_id}
+            if thread_id:
+                fields["message_thread_id"] = thread_id
             if caption:
                 fields["caption"] = caption
                 fields["parse_mode"] = "HTML"
@@ -900,6 +921,8 @@ def _send_images(
             media.append(item)
             files[attach_name] = (f"image{i}.jpg", Path(path).read_bytes())
         fields = {"chat_id": chat_id, "media": json.dumps(media)}
+        if thread_id:
+            fields["message_thread_id"] = thread_id
         return _post_multipart(token, _SEND_MEDIA_GROUP_PATH, fields, files)
     except Exception as exc:
         logger.error("Image album upload failed: %s", exc)
@@ -1016,6 +1039,7 @@ def send_listing_notification(listing: dict) -> bool:
     """
     token = _get_token()
     chat_id = _get_chat_id()
+    topic_id = _get_listing_topic_id()
     message = _format_listing_message(listing)
 
     logger.info(
@@ -1031,7 +1055,7 @@ def send_listing_notification(listing: dict) -> bool:
             "text-only notification.",
             listing.get("listing_id"),
         )
-        return _send_message(token, chat_id, message)
+        return _send_message(token, chat_id, message, thread_id=topic_id)
 
     tmp_dir = tempfile.mkdtemp(prefix="funda-images-")
     try:
@@ -1052,11 +1076,14 @@ def send_listing_notification(listing: dict) -> bool:
                 "text-only notification.",
                 listing.get("listing_id"),
             )
-            return _send_message(token, chat_id, message)
+            return _send_message(token, chat_id, message, thread_id=topic_id)
 
         # --- Preferred delivery: photos + full text as one media message ---
         if _fits_telegram_caption(message):
-            if _send_images(token, chat_id, downloaded_paths, caption=message):
+            if _send_images(
+                token, chat_id, downloaded_paths, caption=message,
+                thread_id=topic_id,
+            ):
                 logger.info(
                     "Sent notification with %d photo(s) for listing %s.",
                     len(downloaded_paths), listing.get("listing_id"),
@@ -1068,14 +1095,15 @@ def send_listing_notification(listing: dict) -> bool:
                 "duplicates).",
                 listing.get("listing_id"),
             )
-            return _send_message(token, chat_id, message)
+            return _send_message(token, chat_id, message, thread_id=topic_id)
 
         # --- Caption too long: text first, photos as an album after it ---
-        if not _send_message(token, chat_id, message):
+        if not _send_message(token, chat_id, message, thread_id=topic_id):
             return False
         if _send_images(
             token, chat_id, downloaded_paths,
             caption=html.escape(listing.get("address") or ""),
+            thread_id=topic_id,
         ):
             logger.info(
                 "Sent %d photo(s) for listing %s.",

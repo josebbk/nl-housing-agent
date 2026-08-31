@@ -105,6 +105,7 @@ class DetailData:
     year_built: Optional[int] = None
     status: Optional[str] = None
     plot_size_m2: Optional[int] = None
+    neighborhood: Optional[str] = None
     image_urls: Optional[list] = None
     description: Optional[str] = None
 
@@ -1141,6 +1142,68 @@ def _extract_plot_size(kenmerken_body: Optional[str]) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# Address header (street + postal/city + neighborhood) extraction
+# ---------------------------------------------------------------------------
+
+_ADDRESS_H1_RE = re.compile(r"<h1\b[^>]*>.*?</h1>", re.DOTALL)
+
+# Dutch postal-code opening: "1234 AB" (the two letters may be followed
+# immediately by the city, as Funda renders it in the header span).
+_POSTAL_CITY_RE = re.compile(r"^\d{4}\s*[A-Za-z]{2}\b")
+
+
+def _extract_neighborhood(html: str) -> Optional[str]:
+    """Extract the normalized neighborhood string from the detail page HTML.
+
+    The rendered detail page's address header (``<h1>``) contains, in order:
+    the street address, the postal code + city, and a linked neighborhood
+    name. Funda renders these as sibling elements with no separator in the
+    raw HTML, e.g.::
+
+        <h1>
+          <span>Incastraat 19</span>
+          <span>1448 XS Purmerend</span>
+          <a aria-label="Amerika" href=".../informatie/purmerend/amerika">Amerika</a>
+        </h1>
+
+    Returns ``"{neighborhood_name} - {postal_code} {city}"`` (e.g.
+    ``"Amerika - 1448 XS Purmerend"``), or None when the header cannot be
+    parsed. Values are taken verbatim from the page — never invented, never
+    guessed.
+    """
+    if not html:
+        return None
+
+    m = _ADDRESS_H1_RE.search(html)
+    if not m:
+        return None
+    header = m.group(0)
+
+    # Neighborhood name — the linked name in the header. Prefer aria-label
+    # (the accessible name), falling back to the visible link text.
+    nb_m = re.search(r'<a\b[^>]*aria-label="([^"]+)"', header)
+    if nb_m:
+        neighborhood_name = nb_m.group(1).strip()
+    else:
+        a_m = re.search(r"<a\b[^>]*>(.*?)</a>", header, re.DOTALL)
+        neighborhood_name = re.sub(r"<[^>]+>", "", a_m.group(1)).strip() if a_m else None
+
+    # Postal code + city — the header span whose text opens with a Dutch
+    # postal code ("1234 AB"). Matched by content rather than position so
+    # the extraction survives reordering of the header children.
+    postal_city = None
+    for span_text in re.findall(r"<span\b[^>]*>([^<]+)</span>", header):
+        candidate = span_text.strip()
+        if _POSTAL_CITY_RE.match(candidate):
+            postal_city = candidate
+            break
+
+    if neighborhood_name and postal_city:
+        return f"{neighborhood_name} - {postal_city}"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Property image extraction
 # ---------------------------------------------------------------------------
 
@@ -1244,6 +1307,15 @@ def fetch_listing_details(url: str) -> dict:
 
         # Step 1: Fetch HTML with urllib (Akamai bypass)
         html = _fetch_page_html(url, timeout=30)
+
+        # --- Address header (neighborhood + postal code + city) ---
+        # Extracted from the raw HTML before rendering — the header is
+        # server-side rendered and needs no JavaScript. Enriches the
+        # card-level neighborhood (city slug) with the full
+        # "{neighborhood} - {postal} {city}" string.
+        neighborhood = _extract_neighborhood(html)
+        if neighborhood:
+            result.neighborhood = neighborhood
 
         # Step 2: Load into Playwright for JS rendering
         with sync_playwright() as pw:

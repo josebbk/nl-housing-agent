@@ -248,6 +248,31 @@ database row (`dict(row)`), which contains all columns including phase2 fields t
 NULL. If `detail.update(listing)` were used instead, the NULL DB columns would overwrite
 the scraped detail values, resulting in all detail fields being NULL in the database.
 
+### Neighborhood extraction
+
+The `neighborhood` field is sourced in two stages:
+
+1. **Card level (`scraper.py`)** — populated from the URL slug
+   (`/detail/koop/{city}/…`) so the required field is always present at
+   the initial `insert_listing()` call, e.g. `purmerend`.
+2. **Detail page (`detail_scraper.py`)** — `_extract_neighborhood()`
+   parses the detail page's address `<h1>` (street span → postal+city
+   span → neighborhood `<a aria-label>`) and returns
+   `"{neighborhood} - {postal code} {city}"` (e.g. `Amerika - 1448 XS
+   Purmerend`). This value is merged over the card-level slug via the
+   existing `listing.update(detail)` flow in
+   `main.py::_score_and_persist_listing` and overwrites the stored
+   `neighborhood`.
+
+Required-field enforcement is unaffected: the card-level slug is always
+present before any detail fetch, and when the detail-page header cannot
+be parsed, `_extract_neighborhood()` returns `None` (omitted from the
+detail dict via `DetailData.to_dict()`), leaving the card-level value in
+place. `neighborhood` remains a freely-overwritable card-level field in
+`storage.py::insert_listing()` — it is intentionally not in the
+detail-field preservation list, so the enriched value overwrites the
+slug on subsequent detail fetches.
+
 ### Scoring criteria
 
 The scoring system implements **12 weighted criteria**.
@@ -418,7 +443,10 @@ Phase 1 filter matching.
   guessed. As of Task 10 it also returns the raw Dutch listing
   description (`description`, capped at 4000 chars) for the
   notification's Pros/Cons/Bottom line sections; the field is
-  in-memory only and is not persisted.
+  in-memory only and is not persisted. It also enriches the
+  `neighborhood` field from the detail page's address header as
+  `"{neighborhood} - {postal code} {city}"` (see "Neighborhood
+  extraction" below).
 
 * **`src/scoring.py`** — Scores a listing's detail data against user
   preferences loaded from `config/preferences.json`. Implements the
@@ -529,10 +557,10 @@ media message (see "Property images in notifications"). The format is:
 <b>{address}</b>
 
 💰 Price: €{price}
-🏠 Living area Size: {living_area} m² · €{price_per_m2}/m²
+🏠 Living area: {living_area} m² · €{price_per_m2}/m²
 🌳 Plot Size: {plot_size_m2} m²
 🛏 Bedrooms: {bedrooms}
-🌳 Garden area: {garden_size_m2} m² / Yes / No
+🌿 Garden area: {garden_size_m2} m² / Yes / No
 📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
 ⚡ Energy label: {energy_label}
 🏗 Year built: {year_built}
@@ -574,8 +602,8 @@ Bottom line: ...
 
 * **Title** — the address on line 1, bold, kept exactly as provided by
   the listing; no prose around it.
-* **Metric lines** — `💰 Price`, `🏠 Living area Size` (living area +
-  price/m²), `🌳 Plot Size`, `🛏 Bedrooms`, `🌳 Garden area`,
+* **Metric lines** — `💰 Price`, `🏠 Living area` (living area +
+  price/m²), `🌳 Plot Size`, `🛏 Bedrooms`, `🌿 Garden area`,
   `📍 Location`, `⚡ Energy label`, `🏗 Year built`, `🏢 Stories`,
   `🅿️ Parking`.
   Lines whose only content would be missing fields are omitted
@@ -590,14 +618,16 @@ Bottom line: ...
   e.g. `Available (Parkeervergunning)`; a missing value renders `No`.
 * **Garden area** — the size in m² when `garden_size_m2` is available,
   otherwise `Yes` (garden present) or `No`.
-* **Location** — uses the available components in the order City →
-  Area/District → Street → Postal code, and carries the "Location On
+* **Location** — uses the available components and carries the "Location On
   Map" link (the stored URL's English variant with a `/kaart` suffix)
-  inline. City comes from `neighborhood` (capitalized); Street is
-  derived from the address by stripping the trailing house number and
-  is omitted when no house number can be identified (a street is never
-  guessed). Area/District and Postal code are not extracted by the
-  project and are never fabricated.
+  inline. The `neighborhood` field is enriched on the detail-page fetch
+  to `"{neighborhood} - {postal code} {city}"` (e.g. `Amerika - 1448 XS
+  Purmerend`) and is displayed verbatim on the Location line — it is a
+  pre-formatted string, no longer a lowercase city slug, so it is no
+  longer title-cased (title-casing would mangle the postal code, e.g.
+  `XS` → `Xs`). Street is derived from the address by stripping the
+  trailing house number and is omitted when no house number can be
+  identified (a street is never guessed).
 * **View on Funda link** (Task 11) — a `View on Funda` link is appended
   on its own line after the Bottom line, pointing at the English
   variant of the stored URL (no `/kaart` suffix). The URL conversions
@@ -642,10 +672,10 @@ placeholder values:
 <b>{address}</b>
 
 💰 Price: €{price}
-🏠 Living area Size: {living_area} m² · €{price_per_m2}/m²
+🏠 Living area: {living_area} m² · €{price_per_m2}/m²
 🌳 Plot Size: {plot_size_m2} m²
 🛏 Bedrooms: {bedrooms}
-🌳 Garden area: {garden_size_m2} m² / Yes / No
+🌿 Garden area: {garden_size_m2} m² / Yes / No
 📍 Location: {city} · {street} · <a href="{map_url}">Location On Map</a>
 ⚡ Energy label: {energy_label}
 🏗 Year built: {year_built}
@@ -660,7 +690,7 @@ placeholder values:
 * **Plot / Year built** — `🌳 Plot Size: … m²` and `🏗 Year built: …`
   lines appear only when the respective field is non-null
   (`plot_size_m2`, `year_built`).
-* **Garden / Parking** — `🌳 Garden area` and `🅿️ Parking` lines are
+* **Garden / Parking** — `🌿 Garden area` and `🅿️ Parking` lines are
   always shown; values are English (see the approved-template rules
   above).
 * **Property type, status and ownership** — not displayed (Dutch
