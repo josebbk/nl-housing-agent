@@ -47,6 +47,7 @@ _TELEGRAM_API_BASE = "https://api.telegram.org"
 _SEND_MSG_PATH = "/bot{token}/sendMessage"
 _SEND_PHOTO_PATH = "/bot{token}/sendPhoto"
 _SEND_MEDIA_GROUP_PATH = "/bot{token}/sendMediaGroup"
+_CREATE_TOPIC_PATH = "/bot{token}/createForumTopic"
 _MESSAGE_DELAY = 1.1  # seconds between messages (Telegram rate limit safety)
 
 # --- Caption limits ---
@@ -989,8 +990,78 @@ def send_failure_alert(message: str) -> bool:
         return False
 
 
-def send_listing_notification(listing: dict) -> bool:
+def create_forum_topic(name: str) -> str | None:
+    """Create a new Telegram forum topic in the configured supergroup.
+
+    Uses the configured supergroup chat ID (TELEGRAM_CHAT_ID). Requires the
+    bot to be an administrator with ``can_manage_topics`` in the supergroup;
+    a non-admin bot (or a non-forum chat) makes Telegram reject the call.
+
+    Returns the ``message_thread_id`` of the newly created topic on success,
+    or ``None`` on any failure (the topic may already exist / permission
+    denied / pure network error) — the caller decides how to react. Never
+    logs the token.
+
+    Parameters
+    ----------
+    name : str
+        Name of the new forum topic, e.g. "Diemen — Funda Matches".
+
+    Returns
+    -------
+    str | None
+        The new topic's message_thread_id, or None on failure.
+    """
+    token = _get_token()
+    chat_id = _get_chat_id()
+
+    payload_data = {"chat_id": chat_id, "name": name}
+    payload = json.dumps(payload_data).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    url = f"{_TELEGRAM_API_BASE}{_CREATE_TOPIC_PATH.format(token=token)}"
+    req = request.Request(url, data=payload, headers=headers, method="POST")
+
+    try:
+        with request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            if body.get("ok"):
+                thread_id = body.get("result", {}).get("message_thread_id")
+                logger.info(
+                    "Created forum topic '%s' (message_thread_id=%s).",
+                    name, thread_id,
+                )
+                return str(thread_id) if thread_id is not None else None
+            logger.error(
+                "Telegram createForumTopic returned error: %s",
+                body.get("description", "unknown"),
+            )
+            return None
+    except error.HTTPError as exc:
+        if exc.code in (401, 403):
+            logger.error(
+                "Failed to create forum topic (HTTP %d): the bot is not an "
+                "admin with can_manage_topics, or is not in the supergroup.",
+                exc.code,
+            )
+        else:
+            logger.error("Telegram createForumTopic HTTP error %d: %s",
+                         exc.code, exc.read().decode()[:200])
+        return None
+    except error.URLError as exc:
+        logger.error("Failed to create forum topic (network error): %s", exc.reason)
+        return None
+    except Exception as exc:
+        logger.error("Unexpected error creating forum topic: %s", exc)
+        return None
+
+
+def send_listing_notification(listing: dict, thread_id: str | None = None) -> bool:
     """Send a single coherent Telegram notification for a listing.
+
+    ``thread_id`` optionally overrides the topic/thread the notification is
+    posted to. When ``None`` (the default) the notification uses the
+    environment-configured listing topic (TELEGRAM_MESSAGE_THREAD_ID), i.e.
+    existing behaviour is unchanged.
 
     Delivery flow (text and photos presented together as ONE coherent
     notification):
@@ -1039,7 +1110,7 @@ def send_listing_notification(listing: dict) -> bool:
     """
     token = _get_token()
     chat_id = _get_chat_id()
-    topic_id = _get_listing_topic_id()
+    topic_id = thread_id if thread_id is not None else _get_listing_topic_id()
     message = _format_listing_message(listing)
 
     logger.info(
