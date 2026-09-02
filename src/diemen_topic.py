@@ -36,7 +36,8 @@ Run manually (NOT scheduled):
 
 import argparse
 import logging
-import sys
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import FilterConfig
@@ -65,6 +66,17 @@ _DIEMEN_AREA_SLUGS = frozenset({"diemen", "duivendrecht"})
 # Number of listings posted by default (owner asked for "several", a small
 # sample — never the whole set).
 _DEFAULT_MAX_LISTINGS = 4
+
+# The Diemen forum topic created for this purpose (verified live).
+# Seed/live posts go ONLY here; the general chat / old flow target is never
+# touched by this module.
+DIEMEN_TOPIC_ID = "870"
+
+# Dedicated, Diemen-only "already sent to the Diemen topic" ledger, entirely
+# separate from the global ``notified`` flag (which belongs to the main.py
+# pipeline). This is what lets the seed + live flow dedup without ever
+# disturbing (or re-reading) the old notification state.
+_DIEMEN_SENT_TABLE = "diemen_sent"
 
 
 def area_is_diemen(neighborhood: str | None) -> bool:
@@ -253,11 +265,201 @@ def post_listings_to_topic(
     return sent
 
 
+# ---------------------------------------------------------------------------
+# Isolated Diemen seed + live ledger (separate from the main.py notified flag)
+# ---------------------------------------------------------------------------
+
+def _init_diemen_sent(db_path: Path | str) -> None:
+    """Idempotently create the Diemen-only sent-ledger table.
+
+    This ledger is fully separate from the global ``notified`` column used by
+    the main.py pipeline, so the Diemen seed/live flow never resets, re-reads,
+    or re-interprets the old notification state.
+    """
+    with sqlite3.connect(str(db_path)) as con:
+        con.execute(
+            f"CREATE TABLE IF NOT EXISTS {_DIEMEN_SENT_TABLE} ("
+            "listing_id TEXT PRIMARY KEY, sent_at TEXT NOT NULL);"
+        )
+
+
+def _diemen_sent_ids(db_path: Path | str) -> set:
+    if not Path(db_path).exists():
+        return set()
+    with sqlite3.connect(str(db_path)) as con:
+        rows = con.execute(
+            f"SELECT listing_id FROM {_DIEMEN_SENT_TABLE}").fetchall()
+    return {r[0] for r in rows}
+
+
+def _mark_diemen_sent(listing_id: str, db_path: Path | str) -> None:
+    with sqlite3.connect(str(db_path)) as con:
+        con.execute(
+            f"INSERT OR IGNORE INTO {_DIEMEN_SENT_TABLE} (listing_id, sent_at) "
+            "VALUES (?, ?)",
+            (listing_id, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def _fetch_seedable(listings: list[dict], filters: FilterConfig) -> list[dict]:
+    """Return only listings that genuinely match the Diemen filters."""
+    return [l for l in listings if _matches_filters(l, filters)]
+
+
+def load_seed_candidates(
+    filters: FilterConfig, db_path: Path | str,
+) -> list[dict]:
+    """Load existing matching Diemen listings from the DB (source of truth),
+    excluding none — the caller applies the already-sent filter. Returns the
+    card-level dicts that pass the Diemen filter checks.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT listing_id, url, address, neighborhood, price, "
+            "living_area_m2, bedrooms, property_type, notified "
+            "FROM listings"
+        ).fetchall()
+    return _fetch_seedable([dict(r) for r in rows], filters)
+
+
+def select_for_seed(
+    candidates: list[dict], already_sent: set, requested: int,
+) -> list[dict]:
+    """Select the seed batch: existing matching candidates that have not yet
+    been sent to the Diemen topic, up to ``requested`` (ordered as given).
+
+    Never fabricates: returns at most ``len(candidates)`` and never invents
+    listings. If fewer than ``requested`` remain, only those are returned.
+    """
+    selected = []
+    for listing in candidates:
+        if listing.get("listing_id") in already_sent:
+            continue
+        selected.append(listing)
+        if len(selected) >= requested:
+            break
+    return selected
+
+
+def apply_seed(
+    candidates: list[dict], filters: FilterConfig, db_path: Path | str,
+    requested: int, topic_id: str, dry_run: bool = False,
+    sender=None,
+) -> int:
+    """Seed the Diemen topic with matching, not-yet-seeded listings.
+
+    Posts each candidate to ``topic_id`` via the current rich notification
+    (reusing ``send_listing_notification``), records it in the Diemen-only
+    ledger, and never touches the global ``notified`` flag nor any other
+    topic. ``sender`` is injectable for tests (default: send_listing_notification).
+    Returns the number actually posted.
+    """
+    already = _diemen_sent_ids(db_path)
+    batch = select_for_seed(candidates, already, requested)
+    _init_diemen_sent(db_path)
+    sender = sender or send_listing_notification
+    posted = 0
+    for listing in batch:
+        listing_id = listing.get("listing_id", "?")
+        if dry_run:
+            logger.info("DRY-RUN would seed: %s | %s", listing_id,
+                        listing.get("address"))
+            continue
+        enriched = _enrich(listing, filters)
+        try:
+            ok = sender(enriched, topic_id)
+        except Exception as exc:
+            logger.error("Seeding %s failed: %s", listing_id, exc)
+            ok = False
+        if ok:
+            _mark_diemen_sent(listing_id, db_path)
+            posted += 1
+            logger.info("Seeded %s -> topic %s (diemen_sent).", listing_id, topic_id)
+        else:
+            logger.error("Seed notification for %s failed; not marked sent.",
+                         listing_id)
+    logger.info("Seed complete: posted %d/%d to topic %s.",
+                posted, len(batch), topic_id)
+    return posted
+
+
+def apply_live(
+    filters: FilterConfig, db_path: Path | str, topic_id: str,
+    dry_run: bool = False, sender=None, scraper=None,
+) -> int:
+    """Live mode: scrape Diemen with the Diemen filters and post only NEW
+    matching listings (not already in the Diemen ledger, not already in the
+    DB) to the Diemen topic only.
+
+    Fully isolated from main.py: never marks the global ``notified`` flag,
+    never posts to the general chat / other topics, and never reads the old
+    notification state. ``scraper``/``sender`` injectable for tests.
+    Returns the number posted (new matches only).
+    """
+    _init_diemen_sent(db_path)
+    scraper = scraper or scrape_funda
+    sender = sender or send_listing_notification
+    kwargs = _scrape_kwargs(filters)
+    scraped = scraper(**kwargs)
+
+    # Only listings that match the Diemen filters and are not already in the
+    # ledger (and were not already in the DB) may be posted.
+    known_ids = {
+        r[0] for r in _existing_listing_ids(db_path)
+    } | _diemen_sent_ids(db_path)
+
+    posted = 0
+    for listing in scraped:
+        listing_id = listing.get("listing_id", "?")
+        if not _matches_filters(listing, filters):
+            logger.info("Live: skipping non-matching %s", listing_id)
+            continue
+        if listing_id in known_ids:
+            logger.info("Live: skipping already-seen/sent %s", listing_id)
+            continue
+        if dry_run:
+            logger.info("DRY-RUN would live-post: %s | %s", listing_id,
+                        listing.get("address"))
+            continue
+        enriched = _enrich(listing, filters)
+        try:
+            ok = sender(enriched, topic_id)
+        except Exception as exc:
+            logger.error("Live post %s failed: %s", listing_id, exc)
+            ok = False
+        if ok:
+            _mark_diemen_sent(listing_id, db_path)
+            posted += 1
+            logger.info("Live: posted %s -> topic %s (diemen_sent).",
+                        listing_id, topic_id)
+        else:
+            logger.error("Live notification for %s failed; not marked sent.",
+                         listing_id)
+    logger.info("Live complete: posted %d new listing(s) to topic %s.",
+                posted, topic_id)
+    return posted
+
+
+def _existing_listing_ids(db_path: Path | str) -> list:
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    with sqlite3.connect(str(db_path)) as con:
+        return con.execute("SELECT listing_id FROM listings").fetchall()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="One-off: create a new forum topic and post a small batch "
-                    "of matching Diemen listings.",
+        description="Isolated Diemen flow: seed existing matches into the "
+                    "Diemen topic, or run live to post new matches there.",
     )
+    parser.add_argument("--mode", choices=("seed", "live"), default="seed",
+                        help="seed = post existing matching Diemen listings; "
+                             "live = post NEW matching listings (default: seed).")
     parser.add_argument("--filters", default=str(_DEFAULT_FILTERS_PATH),
                         help="Path to the Diemen JSON filter file "
                              "(default: %(default)s).")
@@ -265,11 +467,15 @@ def main() -> None:
                         help="SQLite database path (default: %(default)s).")
     parser.add_argument("--max-listings", type=int, default=_DEFAULT_MAX_LISTINGS,
                         help="Max listings to post (default: %(default)s).")
+    parser.add_argument("--topic-id", default=DIEMEN_TOPIC_ID,
+                        help="Diemen forum topic message_thread_id "
+                             "(default: %(default)s).")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Scrape, store and select, but do NOT create the "
-                             "topic or send any Telegram messages.")
+                        help="Scrape/select only; do NOT post any Telegram "
+                             "messages.")
     parser.add_argument("--topic-name", default=TOPIC_NAME,
-                        help="Name of the new forum topic (default: %(default)s).")
+                        help="Name of the forum topic (for create/seed "
+                             "information; default: %(default)s).")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -278,40 +484,33 @@ def main() -> None:
     filters = FilterConfig.from_file(args.filters)
     logger.info("Loaded Diemen filters from %s", args.filters)
 
-    scraped = scrape_and_store(filters, args.db_path)
-    batch = select_batch(scraped["listings"], filters, args.max_listings)
+    # The Diemen topic is a fixed, isolated target; the module never posts to
+    # the general chat or any other topic.
+    topic_id = args.topic_id
 
-    if not batch:
-        logger.error("No stored Diemen listings match the filters; "
-                     "creating no topic and sending nothing.")
-        sys.exit(1)
-
-    if args.dry_run:
-        logger.info("DRY-RUN: would create topic '%s' and post %d listing(s).",
-                    args.topic_name, len(batch))
-        for l in batch:
-            logger.info("  DRY-RUN would post: %s | %s | €%s | %s m2 | %s bd",
-                        l.get("listing_id"), l.get("address"), l.get("price"),
-                        l.get("living_area_m2"), l.get("bedrooms"))
-        return
-
-    thread_id = create_forum_topic(args.topic_name)
-    if thread_id is None:
-        logger.error(
-            "Could not create the new forum topic '%s'. No messages were "
-            "sent so nothing was misplaced — fix the blocker and re-run.",
-            args.topic_name,
-        )
-        sys.exit(1)
-
-    logger.info("New forum topic '%s' created (message_thread_id=%s).",
-                args.topic_name, thread_id)
-
-    sent = post_listings_to_topic(batch, filters, thread_id)
-    if sent < len(batch):
-        logger.error("Some listings could not be posted (%d/%d).", sent, len(batch))
-        sys.exit(1)
-    logger.info("Done: %d listing(s) posted to topic '%s'.", sent, args.topic_name)
+    if args.mode == "live":
+        posted = apply_live(filters, args.db_path, topic_id,
+                            dry_run=args.dry_run)
+        logger.info("Live: posted %d new listing(s) to Diemen topic %s.",
+                    posted, topic_id)
+    else:
+        # seed mode: use existing DB matches as the source of truth.
+        candidates = load_seed_candidates(filters, args.db_path)
+        if args.dry_run:
+            already = _diemen_sent_ids(args.db_path)
+            batch = select_for_seed(candidates, already, args.max_listings)
+            logger.info("DRY-RUN would seed %d listing(s) to topic %s:",
+                        len(batch), topic_id)
+            for l in batch:
+                logger.info("  would seed: %s | %s | €%s | %s m2 | %s bd",
+                            l.get("listing_id"), l.get("address"),
+                            l.get("price"), l.get("living_area_m2"),
+                            l.get("bedrooms"))
+            return
+        posted = apply_seed(candidates, filters, args.db_path,
+                            args.max_listings, topic_id)
+        logger.info("Seed: posted %d listing(s) to Diemen topic %s.",
+                    posted, topic_id)
 
 
 if __name__ == "__main__":
