@@ -1275,34 +1275,50 @@ These should be decided when the project reaches the relevant phase rather than 
 
 ---
 
-## 24. One-off: Diemen — Funda Matches forum topic
+## 24. Diemen — Funda Matches forum topic (seed + live)
 
-Operational run (owner-requested, ad-hoc — not scheduled). Creates ONE new
-Telegram forum topic in the existing supergroup and posts a small sample of
-Funda listings that match the owner's `Diemen.json` filters.
+Owner-requested, isolated flow for the Diemen topic (`message_thread_id=870`)
+in the existing supergroup. Posts Funda listings that match the owner's
+`Diemen.json` filters (price 500–700k, ≥3 bd, ≥100 m², house, available,
+Diemen/Duivendrecht). The topic is currently seeded with all available
+matches (7 total as of 2026-09-02; 4 posted in the first run + 3 in the seed).
 
 Filter file: `Diemen.json` at the repo root (owner-provided criteria — a
-separate, per-task search, not the global `config/filters.json`).
+separate, per-task search, **not** the global `config/filters.json`).
+
+This flow is deliberately isolated from the `main.py` global pipeline:
+
+* it never touches `config/filters.json`, never runs `main.py` / the cron
+  flow, and never posts to the general chat or any other topic;
+* it does **not** change the global `notified` flag — dedup for the Diemen
+  flow uses a separate `diemen_sent` ledger table, so the old notification
+  state is untouched.
 
 ### Procedure
 
 ```bash
-# 1. Dry-run: scrape + store + select, but create NO topic and send NOTHING.
-.venv/bin/python -m src.diemen_topic --dry-run
+# Seed existing matching Diemen listings (already-seeded ones are skipped).
+.venv/bin/python -m src.diemen_topic --mode seed --max-listings 50
 
-# 2. Live: create the new topic and post the small batch there.
-.venv/bin/python -m src.diemen_topic
+# Live: post NEW matching Diemen listings to the same topic (skip already
+# seen/sent). run on demand or via a future scheduler.
+.venv/bin/python -m src.diemen_topic --mode live
+
+# Dry-run either mode: select only, send nothing.
+.venv/bin/python -m src.diemen_topic --mode seed --dry-run
+.venv/bin/python -m src.diemen_topic --mode live --dry-run
 ```
 
 Behaviours worth remembering:
 
-* The module never touches `config/filters.json`, never runs the scheduled
-  pipeline, and does **not** mark listings as notified (normal dedup / the
-  general topic flow are unaffected).
-* It aborts (`exit 1`) before creating a topic or sending anything if the
-  scrape returns 0 listings (possible Funda block) or if topic creation fails.
-* All posts go only to the newly created topic's `message_thread_id`; the
-  general chat / other topics are never written to.
+* `DIEMEN_TOPIC_ID` (default `"870"`) is the only target; seed/live post only
+  there.
+* Seed uses existing DB rows as the source of truth and never fabricates
+  listings — if fewer than requested match, only those are posted.
+* Live posts only listings that both match the Diemen filters and are NOT
+  already in the DB/`diemen_sent` ledger, so it never duplicates or re-posts.
+* There is **no scheduler wired to this yet** (no cron exists for this user);
+  live mode is a runnable entrypoint ready to be scheduled later.
 * `object_type=house` is enforced at the search level by Funda (the search
   URL carries it); the stored `property_type` Dutch slug (`huis`) is not
   re-checked against it (token mismatch).
