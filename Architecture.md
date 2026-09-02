@@ -1695,6 +1695,16 @@ unchanged, mirror `main.py`'s filter→scrape mapping, and expose a `--dry-run`
 mode plus explicit aborts (no topic created / nothing sent) when a preflight
 (failed or empty scrape, topic-creation failure) fails.
 
+For a topic that needs a seed-batch plus ongoing live delivery isolated from
+the global pipeline, the module keeps its own **separate "sent" ledger** (a
+`diemen_sent` table distinct from the global `notified` flag). This is what
+lets a dedicated flow dedup and go live without ever reading or resetting the
+old notification state, and without posting to the general chat / other
+topics. `src/diemen_topic.py` demonstrates this with `--mode seed` (post
+existing matching rows) and `--mode live` (post only new matches), both
+targeting a single fixed topic id. No scheduler is wired to it yet; live mode
+is a runnable entrypoint ready to be scheduled later.
+
 ---
 
 ## Secrets Management
