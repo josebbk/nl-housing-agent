@@ -1666,6 +1666,35 @@ reset `notified`.  When an existing listing is updated, `notified` is always
 preserved as-is.  `notified` is only modified by `mark_as_notified()` or
 the filter-change logic (Task 2).
 
+#### Forum topics (additive)
+
+The notifier exposes two non-destructive building blocks, added for the
+one-off "Diemen — Funda Matches" topic task (see `Operations.md` §24):
+
+* `create_forum_topic(name)` — calls Telegram `createForumTopic` on the
+  configured supergroup and returns the new topic's `message_thread_id` (or
+  `None` on failure). Requires the bot to be a supergroup admin with
+  `can_manage_topics`. The token is never logged; HTTP 401/403 are reported
+  as a permissions issue.
+* `send_listing_notification(listing, thread_id=None)` — when `thread_id` is
+  supplied, the rich notification (HTML caption + best-effort photos album)
+  is posted to that forum topic instead of the environment-default listing
+  topic. When `thread_id` is omitted behaviour is unchanged.
+
+These add no scheduled-pipeline behaviour change; the default topic
+(ID) selection (`_get_listing_topic_id`) remains the source of the topic for
+the normal flow.
+
+#### One-off operational modules
+
+Ad-hoc, owner-requested flows that must not run the scheduled pipeline, mark
+listings notified, or touch `config/filters.json` are implemented as small
+standalone modules in `src/` (e.g. `src/diemen_topic.py`). They reuse the
+existing scraper / storage / detail / scoring / notifier building blocks
+unchanged, mirror `main.py`'s filter→scrape mapping, and expose a `--dry-run`
+mode plus explicit aborts (no topic created / nothing sent) when a preflight
+(failed or empty scrape, topic-creation failure) fails.
+
 ---
 
 ## Secrets Management
