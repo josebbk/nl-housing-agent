@@ -1272,3 +1272,60 @@ The following remain open for future phases:
 * recovery behavior after extended Funda outages
 
 These should be decided when the project reaches the relevant phase rather than prematurely adding infrastructure now.
+
+---
+
+## 24. One-off: Diemen — Funda Matches forum topic
+
+Operational run (owner-requested, ad-hoc — not scheduled). Creates ONE new
+Telegram forum topic in the existing supergroup and posts a small sample of
+Funda listings that match the owner's `Diemen.json` filters.
+
+Filter file: `Diemen.json` at the repo root (owner-provided criteria — a
+separate, per-task search, not the global `config/filters.json`).
+
+### Procedure
+
+```bash
+# 1. Dry-run: scrape + store + select, but create NO topic and send NOTHING.
+.venv/bin/python -m src.diemen_topic --dry-run
+
+# 2. Live: create the new topic and post the small batch there.
+.venv/bin/python -m src.diemen_topic
+```
+
+Behaviours worth remembering:
+
+* The module never touches `config/filters.json`, never runs the scheduled
+  pipeline, and does **not** mark listings as notified (normal dedup / the
+  general topic flow are unaffected).
+* It aborts (`exit 1`) before creating a topic or sending anything if the
+  scrape returns 0 listings (possible Funda block) or if topic creation fails.
+* All posts go only to the newly created topic's `message_thread_id`; the
+  general chat / other topics are never written to.
+* `object_type=house` is enforced at the search level by Funda (the search
+  URL carries it); the stored `property_type` Dutch slug (`huis`) is not
+  re-checked against it (token mismatch).
+
+### DB schema-drift reconciliation (2026-09-02)
+
+While running the Diemen flow, `init_db` failed with:
+`listings and listings_archive have different columns (listings_only=
+['amenities_raw', 'amenities_matched'])`.
+
+Root cause: the local runtime DB (`data/funda.db`) had two legacy columns
+(`amenities_raw`, `amenities_matched`) on `listings` that no longer exist in
+the current `storage.py` schema, are absent from `listings_archive`, and are
+not part of `phase2_columns`. This made `init_db`'s column-set consistency
+check fail for everyone, including the scheduled pipeline.
+
+Fix (data-only, no code/logic change): backup the DB, then add the two missing
+columns to `listings_archive` so both tables expose the same column set;
+`init_db`'s existing order-repair rebuilds the archive in `listings` order.
+The backup lives outside the repo (see §19).
+
+> Pattern/warning: if a "different columns (listings_only=[...])" error
+> reappears, reconcile the local DB the same way. Do not weaken the
+> `init_db` check; keep the two tables' column sets in sync.
+
+---
