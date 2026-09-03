@@ -52,7 +52,11 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_FILTERS_PATH = _PROJECT_ROOT / "Diemen.json"
-_DEFAULT_DB_PATH = _PROJECT_ROOT / "data" / "funda.db"
+# The Diemen flow uses its OWN database, fully separate from the old live
+# flow's data/funda.db. This keeps Diemen listings out of the old flow's
+# "unnotified matching" query and keeps the global `notified` flag (and its
+# meaning) untouched.
+_DEFAULT_DB_PATH = _PROJECT_ROOT / "data" / "diemen.db"
 
 # Default topic name for the new forum topic.
 TOPIC_NAME = "Diemen — Funda Matches"
@@ -316,13 +320,18 @@ def load_seed_candidates(
     db_path = Path(db_path)
     if not db_path.exists():
         return []
-    with sqlite3.connect(str(db_path)) as con:
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT listing_id, url, address, neighborhood, price, "
-            "living_area_m2, bedrooms, property_type, notified "
-            "FROM listings"
-        ).fetchall()
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT listing_id, url, address, neighborhood, price, "
+                "living_area_m2, bedrooms, property_type, notified "
+                "FROM listings"
+            ).fetchall()
+    except sqlite3.OperationalError:
+        # The isolated Diemen DB only holds the `diemen_sent` ledger (seed is
+        # historical); there is no `listings` table here.
+        return []
     return _fetch_seedable([dict(r) for r in rows], filters)
 
 
@@ -392,12 +401,13 @@ def apply_live(
     dry_run: bool = False, sender=None, scraper=None,
 ) -> int:
     """Live mode: scrape Diemen with the Diemen filters and post only NEW
-    matching listings (not already in the Diemen ledger, not already in the
-    DB) to the Diemen topic only.
+    matching listings (not already in the Diemen sent-ledger) to the Diemen
+    topic only.
 
-    Fully isolated from main.py: never marks the global ``notified`` flag,
-    never posts to the general chat / other topics, and never reads the old
-    notification state. ``scraper``/``sender`` injectable for tests.
+    Fully isolated from main.py: uses its own ``diemen.db`` (the Diemen-only
+    sent ledger), never marks the global ``notified`` flag, never posts to the
+    general chat / other topics, and never reads the old flow's listings table
+    or notification state. ``scraper``/``sender`` injectable for tests.
     Returns the number posted (new matches only).
     """
     _init_diemen_sent(db_path)
@@ -406,11 +416,11 @@ def apply_live(
     kwargs = _scrape_kwargs(filters)
     scraped = scraper(**kwargs)
 
-    # Only listings that match the Diemen filters and are not already in the
-    # ledger (and were not already in the DB) may be posted.
-    known_ids = {
-        r[0] for r in _existing_listing_ids(db_path)
-    } | _diemen_sent_ids(db_path)
+    # Dedup is the Diemen-only sent ledger. The Diemen flow does NOT read the
+    # old flow's listings table or `notified` flag, so the two flows stay
+    # fully independent: a listing is "new" iff it has never been sent to the
+    # Diemen topic (and, for seed, iff not already in the ledger).
+    known_ids = _diemen_sent_ids(db_path)
 
     posted = 0
     for listing in scraped:
@@ -442,14 +452,6 @@ def apply_live(
     logger.info("Live complete: posted %d new listing(s) to topic %s.",
                 posted, topic_id)
     return posted
-
-
-def _existing_listing_ids(db_path: Path | str) -> list:
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return []
-    with sqlite3.connect(str(db_path)) as con:
-        return con.execute("SELECT listing_id FROM listings").fetchall()
 
 
 def main() -> None:
