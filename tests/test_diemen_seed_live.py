@@ -296,5 +296,53 @@ class IsolationGuaranteesTest(unittest.TestCase):
         self.assertTrue(dt.DIEMEN_TOPIC_ID)  # non-empty target
 
 
+class IsolatedDatabaseTest(unittest.TestCase):
+    """The Diemen flow uses its own data/diemen.db, separate from the old
+    flow's data/funda.db. It must not read the old flow's `listings` table or
+    `notified` flag for dedup."""
+
+    def test_default_db_is_diemen_db_not_funda_db(self):
+        self.assertEqual(dt._DEFAULT_DB_PATH.name, "diemen.db")
+        self.assertNotEqual(dt._DEFAULT_DB_PATH.name, "funda.db")
+
+    def test_live_dedups_on_diemen_sent_only(self):
+        # A listing present in the old flow's `listings` table but NOT in the
+        # Diemen sent-ledger must still be posted: the Diemen live flow does
+        # not read the old flow's listings/notified state.
+        db = _TempDB()
+        try:
+            db.add([_house("1", neighborhood="diemen")])  # in listings, notified=0
+            dt._init_diemen_sent(db.path)  # but diemen_sent is empty
+            sent = []
+            with mock.patch.object(dt, "scrape_funda",
+                                   return_value=[_house("1")]), \
+                 mock.patch.object(dt, "_enrich", side_effect=lambda l, f: l):
+                n = dt.apply_live(
+                    filters=_filters(), db_path=db.path,
+                    topic_id=dt.DIEMEN_TOPIC_ID, dry_run=False,
+                    sender=lambda l, t: sent.append((l["listing_id"], t)) or True,
+                )
+            self.assertEqual(n, 1)
+            self.assertEqual(sent, [("1", dt.DIEMEN_TOPIC_ID)])
+            # notified flag untouched by the Diemen flow
+            row = db.conn.execute(
+                "SELECT notified FROM listings WHERE listing_id='1'").fetchone()
+            self.assertEqual(row[0], 0)
+        finally:
+            db.close()
+
+    def test_load_seed_candidates_tolerates_missing_listings_table(self):
+        # The isolated diemen.db holds only the diemen_sent ledger, so a seed
+        # candidate query against a DB without a listings table yields [].
+        db = _TempDB()
+        try:
+            db.conn.execute("DROP TABLE listings")
+            db.conn.commit()
+            self.assertEqual(
+                dt.load_seed_candidates(_filters(), db.path), [])
+        finally:
+            db.close()
+
+
 if __name__ == "__main__":
     unittest.main()
