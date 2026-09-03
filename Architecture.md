@@ -1708,6 +1708,18 @@ only new matches, deduping on `diemen_sent` alone), both targeting a single
 fixed topic id. The live mode is run hourly by cron (`0 * * * *`), independent
 of tmux/CLI.
 
+For multiple such topics (Abcoude, Ouderkerk aan de Amstel), this is
+generalized into a reusable **profile runner** (`src/profile_runner.py`),
+driven by `config/topic_profiles.json`. A profile is: name + filter JSON +
+own DB path + own topic id + own area slugs. The runner reuses the same
+building blocks (and `diemen_topic.apply_live`) rather than duplicating the
+pipeline; each profile's DB holds only its own sent ledger, so profiles are
+mutually independent and independent of the global flow. Area matching
+normalizes hyphen/space differences (e.g. the Funda slug
+`ouderkerk-aan-de-amstel` vs the stored display name "ouderkerk aan de
+amstel"). Each profile runs hourly by cron, staggered to avoid concurrent
+browser instances.
+
 ---
 
 ## Secrets Management

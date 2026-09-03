@@ -1376,3 +1376,45 @@ The backup lives outside the repo (see §19).
 > `init_db` check; keep the two tables' column sets in sync.
 
 ---
+
+---
+
+## 25. Reusable profile runner — Abcoude + Ouderkerk aan de Amstel
+
+Two more isolated live Funda topics, driven by a generic reusable runner
+(`src/profile_runner.py`) that generalizes the Diemen architecture instead of
+duplicating it. Each profile = own filter JSON + own SQLite DB (sent ledger) +
+own Telegram forum topic + hourly cron.
+
+| Profile | selected_area | filter file | DB | topic id |
+|---|---|---|---|---|
+| Abcoude | `abcoude` | `Abcoude.json` | `data/abcoude.db` | 899 |
+| Ouderkerk aan de Amstel | `ouderkerk-aan-de-amstel` | `Ouderkerk.json` | `data/ouderkerk-aan-de-amstel.db` | 900 |
+
+Profiles are declared in `config/topic_profiles.json` (name, filter file, DB
+path, topic id, area slugs). Filters are exactly the owner's spec: price
+500–700k, ≥3 bd, ≥100 m², house, available, publish-date desc — no extra
+criteria.
+
+The initial seed for a new profile is just its first live run: with an empty
+sent-ledger, `apply_live` posts every currently-matching listing, then marks
+them, so later runs only post new ones. Seed results (2026-09-03): Abcoude 1
+listing, Ouderkerk aan de Amstel 4 listings.
+
+### Cron
+
+Three hourly jobs, staggered to avoid concurrent headless-browser instances
+(4GB RAM):
+
+```text
+0  * * * * … python -m src.diemen_topic --mode live --db-path data/diemen.db
+15 * * * * … python -m src.profile_runner --profile abcoude --mode live
+30 * * * * … python -m src.profile_runner --profile ouderkerk-aan-de-amstel --mode live
+```
+
+All use the project `.venv`, absolute paths, and append to `logs/cron.log`.
+Each profile is fully independent from every other profile, from the Diemen
+flow, and from the global `main.py` flow (never touches `config/filters.json`,
+the global `notified` flag, or the general chat / other topics).
+
+---
