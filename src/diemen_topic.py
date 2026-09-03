@@ -94,9 +94,26 @@ def area_is_diemen(neighborhood: str | None) -> bool:
     return neighborhood.strip().lower() in _DIEMEN_AREA_SLUGS
 
 
-def _matches_filters(listing: dict, filters: FilterConfig) -> bool:
+def _norm_area(value: str | None) -> str:
+    """Normalize an area/neighborhood for comparison.
+
+    The scraper stores the human-readable municipality name (e.g. "ouderkerk
+    aan de amstel") while the Funda/URL slug uses hyphens
+    ("ouderkerk-aan-de-amstel"). Normalizing both sides (lowercase, strip,
+    hyphen -> space) makes the area check robust to that difference.
+    """
+    return (value or "").strip().lower().replace("-", " ")
+
+
+def _matches_filters(
+    listing: dict, filters: FilterConfig, area_slugs=None,
+) -> bool:
     """Verify the numeric/object criteria that stored card data reliably
     supports: price, bedrooms, living area, and municipality area.
+
+    ``area_slugs`` is an optional iterable of municipality slugs the listing's
+    ``neighborhood`` must belong to; when omitted it defaults to the Diemen
+    slugs (Diemen/Duivendrecht), preserving the original Diemen behaviour.
 
     NULL stored values never satisfy an enabled bound (mirrors the storage
     matching semantics). ``object_type`` is verified at the search level by
@@ -104,7 +121,10 @@ def _matches_filters(listing: dict, filters: FilterConfig) -> bool:
     re-checked against the stored ``property_type`` Dutch slug (huis/...),
     which would be a token mismatch.
     """
-    if not area_is_diemen(listing.get("neighborhood")):
+    slugs = frozenset(area_slugs) if area_slugs is not None else _DIEMEN_AREA_SLUGS
+    normalized_slugs = {_norm_area(s) for s in slugs}
+    neighborhood = _norm_area(listing.get("neighborhood"))
+    if not neighborhood or neighborhood not in normalized_slugs:
         return False
 
     price = listing.get("price")
@@ -132,6 +152,7 @@ def _matches_filters(listing: dict, filters: FilterConfig) -> bool:
 
 def select_batch(
     listings: list[dict], filters: FilterConfig, limit: int = _DEFAULT_MAX_LISTINGS,
+    area_slugs=None,
 ) -> list[dict]:
     """Return a small, deterministic batch of Diemen listings that match the
     filters, in the order they were scraped (Funda's publish-date-desc).
@@ -141,7 +162,7 @@ def select_batch(
     """
     selected: list[dict] = []
     for listing in listings:
-        if _matches_filters(listing, filters):
+        if _matches_filters(listing, filters, area_slugs=area_slugs):
             selected.append(listing)
         if len(selected) >= limit:
             break
@@ -305,13 +326,15 @@ def _mark_diemen_sent(listing_id: str, db_path: Path | str) -> None:
         )
 
 
-def _fetch_seedable(listings: list[dict], filters: FilterConfig) -> list[dict]:
+def _fetch_seedable(
+    listings: list[dict], filters: FilterConfig, area_slugs=None,
+) -> list[dict]:
     """Return only listings that genuinely match the Diemen filters."""
-    return [l for l in listings if _matches_filters(l, filters)]
+    return [l for l in listings if _matches_filters(l, filters, area_slugs=area_slugs)]
 
 
 def load_seed_candidates(
-    filters: FilterConfig, db_path: Path | str,
+    filters: FilterConfig, db_path: Path | str, area_slugs=None,
 ) -> list[dict]:
     """Load existing matching Diemen listings from the DB (source of truth),
     excluding none — the caller applies the already-sent filter. Returns the
@@ -332,7 +355,7 @@ def load_seed_candidates(
         # The isolated Diemen DB only holds the `diemen_sent` ledger (seed is
         # historical); there is no `listings` table here.
         return []
-    return _fetch_seedable([dict(r) for r in rows], filters)
+    return _fetch_seedable([dict(r) for r in rows], filters, area_slugs=area_slugs)
 
 
 def select_for_seed(
@@ -398,17 +421,17 @@ def apply_seed(
 
 def apply_live(
     filters: FilterConfig, db_path: Path | str, topic_id: str,
-    dry_run: bool = False, sender=None, scraper=None,
+    dry_run: bool = False, sender=None, scraper=None, area_slugs=None,
 ) -> int:
-    """Live mode: scrape Diemen with the Diemen filters and post only NEW
-    matching listings (not already in the Diemen sent-ledger) to the Diemen
-    topic only.
+    """Live mode: scrape with the given filters and post only NEW matching
+    listings (not already in the sent-ledger) to the topic only.
 
-    Fully isolated from main.py: uses its own ``diemen.db`` (the Diemen-only
-    sent ledger), never marks the global ``notified`` flag, never posts to the
-    general chat / other topics, and never reads the old flow's listings table
-    or notification state. ``scraper``/``sender`` injectable for tests.
-    Returns the number posted (new matches only).
+    Fully isolated from main.py: uses its own profile DB (the sent ledger),
+    never marks the global ``notified`` flag, never posts to the general chat
+    / other topics, and never reads the old flow's listings table or
+    notification state. ``area_slugs`` restricts the municipality slugs a
+    matching listing must belong to (defaults to Diemen). ``scraper``/``sender``
+    injectable for tests. Returns the number posted (new matches only).
     """
     _init_diemen_sent(db_path)
     scraper = scraper or scrape_funda
@@ -416,16 +439,16 @@ def apply_live(
     kwargs = _scrape_kwargs(filters)
     scraped = scraper(**kwargs)
 
-    # Dedup is the Diemen-only sent ledger. The Diemen flow does NOT read the
-    # old flow's listings table or `notified` flag, so the two flows stay
-    # fully independent: a listing is "new" iff it has never been sent to the
-    # Diemen topic (and, for seed, iff not already in the ledger).
+    # Dedup is the profile-only sent ledger. The profile flow does NOT read the
+    # old flow's listings table or `notified` flag, so the flows stay fully
+    # independent: a listing is "new" iff it has never been sent to this
+    # profile's topic (and, for seed, iff not already in the ledger).
     known_ids = _diemen_sent_ids(db_path)
 
     posted = 0
     for listing in scraped:
         listing_id = listing.get("listing_id", "?")
-        if not _matches_filters(listing, filters):
+        if not _matches_filters(listing, filters, area_slugs=area_slugs):
             logger.info("Live: skipping non-matching %s", listing_id)
             continue
         if listing_id in known_ids:
@@ -444,7 +467,7 @@ def apply_live(
         if ok:
             _mark_diemen_sent(listing_id, db_path)
             posted += 1
-            logger.info("Live: posted %s -> topic %s (diemen_sent).",
+            logger.info("Live: posted %s -> topic %s (sent-ledger).",
                         listing_id, topic_id)
         else:
             logger.error("Live notification for %s failed; not marked sent.",
