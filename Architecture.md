@@ -1697,13 +1697,16 @@ mode plus explicit aborts (no topic created / nothing sent) when a preflight
 
 For a topic that needs a seed-batch plus ongoing live delivery isolated from
 the global pipeline, the module keeps its own **separate "sent" ledger** (a
-`diemen_sent` table distinct from the global `notified` flag). This is what
-lets a dedicated flow dedup and go live without ever reading or resetting the
-old notification state, and without posting to the general chat / other
-topics. `src/diemen_topic.py` demonstrates this with `--mode seed` (post
-existing matching rows) and `--mode live` (post only new matches), both
-targeting a single fixed topic id. No scheduler is wired to it yet; live mode
-is a runnable entrypoint ready to be scheduled later.
+`diemen_sent` table distinct from the global `notified` flag), stored in its
+**own database** (`data/diemen.db`, not the old flow's `data/funda.db`). This
+is what lets a dedicated flow dedup and go live without ever reading or
+resetting the old notification state, without posting to the general chat /
+other topics, and without its listings leaking into the old flow's
+area-insensitive "unnotified matching" query. `src/diemen_topic.py` demonstrates
+this with `--mode seed` (post existing matching rows) and `--mode live` (post
+only new matches, deduping on `diemen_sent` alone), both targeting a single
+fixed topic id. The live mode is run hourly by cron (`0 * * * *`), independent
+of tmux/CLI.
 
 ---
 

@@ -1288,11 +1288,29 @@ separate, per-task search, **not** the global `config/filters.json`).
 
 This flow is deliberately isolated from the `main.py` global pipeline:
 
+* it uses its **own** SQLite DB — `data/diemen.db` — containing only the
+  `diemen_sent` ledger, so Diemen listings never enter the old flow's
+  `data/funda.db` and never appear in the old flow's "unnotified matching"
+  query;
 * it never touches `config/filters.json`, never runs `main.py` / the cron
   flow, and never posts to the general chat or any other topic;
 * it does **not** change the global `notified` flag — dedup for the Diemen
-  flow uses a separate `diemen_sent` ledger table, so the old notification
-  state is untouched.
+  flow uses the `diemen_sent` ledger, so the old notification state is
+  untouched.
+
+### Production cron (installed 2026-09-03)
+
+The Diemen live flow runs automatically every hour (independent of tmux /
+OpenCode / Gemini CLI), using the project `.venv` and absolute paths, logging
+to `logs/cron.log`:
+
+```text
+0 * * * * cd /home/rashid/projects/nl-housing-agent && /home/rashid/projects/nl-housing-agent/.venv/bin/python -m src.diemen_topic --mode live --db-path data/diemen.db >> /home/rashid/projects/nl-housing-agent/logs/cron.log 2>&1
+```
+
+There is no other cron entry for this project, so this does not duplicate any
+existing job. Each run launches one headless Chromium instance, scrapes the
+Diemen search once, and exits.
 
 ### Procedure
 
@@ -1316,12 +1334,25 @@ Behaviours worth remembering:
 * Seed uses existing DB rows as the source of truth and never fabricates
   listings — if fewer than requested match, only those are posted.
 * Live posts only listings that both match the Diemen filters and are NOT
-  already in the DB/`diemen_sent` ledger, so it never duplicates or re-posts.
-* There is **no scheduler wired to this yet** (no cron exists for this user);
-  live mode is a runnable entrypoint ready to be scheduled later.
+  already in the `diemen_sent` ledger, so it never duplicates or re-posts
+  (dedup is ledger-only; it does not read the old flow's `listings` table or
+  `notified` flag).
 * `object_type=house` is enforced at the search level by Funda (the search
   URL carries it); the stored `property_type` Dutch slug (`huis`) is not
   re-checked against it (token mismatch).
+
+### Data migration (2026-09-03)
+
+The earlier one-off seed stored 7 Diemen listings in the shared `data/funda.db`
+with `notified=0`, which meant the old flow's area-insensitive
+`fetch_unnotified_matching_listings` query would have notified them to the old
+topic. To make the two flows independent, those 7 rows were moved out:
+
+* `data/diemen.db` now holds the `diemen_sent` ledger (the 7 seeded IDs);
+* `data/funda.db` was restored to pure Amsterdam (44 rows) — the 7 Diemen rows
+  were deleted and its transient `diemen_sent` table dropped.
+
+Backups: `/home/rashid/db-backups/funda.db.bak-*`.
 
 ### DB schema-drift reconciliation (2026-09-02)
 
