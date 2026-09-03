@@ -1,0 +1,18 @@
+{
+  "abcoude": {
+    "name": "Abcoude",
+    "topic_name": "Abcoude",
+    "filters": "Abcoude.json",
+    "db": "data/abcoude.db",
+    "topic_id": "899",
+    "area_slugs": ["abcoude"]
+  },
+  "ouderkerk-aan-de-amstel": {
+    "name": "Ouderkerk aan de Amstel",
+    "topic_name": "Ouderkerk aan de Amstel",
+    "filters": "Ouderkerk.json",
+    "db": "data/ouderkerk-aan-de-amstel.db",
+    "topic_id": "900",
+    "area_slugs": ["ouderkerk-aan-de-amstel"]
+  }
+}
