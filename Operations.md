@@ -534,6 +534,10 @@ Do not log:
 
 ## 7. Cron Output
 
+> **Superseded (2026-09-05):** The hourly cron entry for the global flow was
+> disabled on this date (see §26). This section is preserved for historical
+> context.
+
 Cron should redirect stdout/stderr to:
 
 ```text
@@ -561,6 +565,9 @@ The AI coding environment must never be required for production execution.
 ---
 
 ## 8. Scheduled Execution
+
+> **Superseded (2026-09-05):** The scheduled global flow was disabled (see
+> §26). This section is preserved for historical context.
 
 > **Superseded (Task 5):** The schedule was changed from every 30 minutes to
 > every 5 hours.
@@ -1416,5 +1423,41 @@ All use the project `.venv`, absolute paths, and append to `logs/cron.log`.
 Each profile is fully independent from every other profile, from the Diemen
 flow, and from the global `main.py` flow (never touches `config/filters.json`,
 the global `notified` flag, or the general chat / other topics).
+
+---
+
+## 26. Global main.py flow (topic 844 "House listings") — retired
+
+> **Superseded (2026-09-05):** The original global pipeline — scrape Amsterdam
+> via `config/filters.json`, store in `data/funda.db`, notify Telegram forum
+> topic 844 ("House listings", `TELEGRAM_MESSAGE_THREAD_ID=844` in `.env`) —
+> has been superseded by the three independent per-area profiles described in
+> §24 and §25 (Diemen topic 870, Abcoude topic 899, Ouderkerk aan de Amstel
+> topic 900), each with its own filter file, DB, topic id, and cron entry.
+
+### Cron disable (2026-09-05)
+
+The hourly cron entry for the global flow was commented out on 2026-09-05:
+
+```text
+# disabled 2026-09-05: House listings topic (844) retired, superseded by Diemen/Abcoude/Ouderkerk profiles
+# 0 * * * * cd /home/jose/projects/nl-housing-agent && .venv/bin/python -m src.main >> logs/cron.log 2>&1
+```
+
+The line is kept (commented, not deleted) for recoverability. No code, DB, or
+filter files were changed — this is a scheduling-only change. The three
+per-area profile cron entries (`diemen_topic` / `profile_runner`, installed
+under the `rashid` user per §24–§25) are unaffected and continue to run
+hourly.
+
+### data/funda.db — retained as historical data
+
+`data/funda.db` (the global flow's SQLite DB, pure-Amsterdam listings) is
+retained as historical data. With the global flow disabled, no further writes
+are expected; do not delete or repurpose it without explicit approval.
+
+The rest of this document (§7, §8, §11, §12) still describes how the global
+`python -m src.main` flow worked and remains accurate for reference/manual
+use, but that flow is no longer scheduled.
 
 ---
